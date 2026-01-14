@@ -36,6 +36,7 @@ def run_universe_refresh() -> None:
 
     if state:
         last_attempt = _parse_timestamp(state.get("last_attempt"))
+        last_success = _parse_timestamp(state.get("last_success"))
         failure_count = int(state.get("failure_count", 0))
         if failure_count >= MAX_ATTEMPTS:
             _send_telegram(
@@ -44,8 +45,11 @@ def run_universe_refresh() -> None:
                 logger,
             )
             return
-        if last_attempt and now - last_attempt < ATTEMPT_COOLDOWN:
-            logger.info("Universe refresh skipped; last attempt within 24 hours.")
+        if failure_count == 0 and last_success and now - last_success < ATTEMPT_COOLDOWN:
+            logger.info("Universe refresh skipped; last success within 24 hours.")
+            return
+        if failure_count > 0 and last_attempt and now - last_attempt < timedelta(minutes=1):
+            logger.info("Universe refresh skipped; last attempt was just moments ago.")
             return
 
     api_key = os.environ.get("T212_API_KEY", "")

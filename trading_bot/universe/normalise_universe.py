@@ -108,6 +108,7 @@ def normalise_universe(
         logger.info("Unknown Trading212 instrument fields detected: %s", sorted(unknown_fields))
 
     df = pd.DataFrame(rows, columns=_schema_columns())
+    df = _filter_equity_universe(df, logger)
     summary = _build_summary(df, timestamp)
     return df, summary
 
@@ -142,6 +143,24 @@ def _schema_columns() -> list[str]:
         "source",
         "last_updated",
     ]
+
+
+def _filter_equity_universe(df: pd.DataFrame, logger: logging.Logger) -> pd.DataFrame:
+    allowed = {"ETF", "STOCK"}
+    type_series = df["type"].astype(str).str.upper()
+    mask = type_series.isin(allowed)
+    if not mask.all():
+        excluded = (
+            type_series[~mask]
+            .value_counts()
+            .sort_values(ascending=False)
+            .to_dict()
+        )
+        logger.info("Filtered non-ETF/STOCK instruments: %s", excluded)
+    filtered = df.loc[mask].reset_index(drop=True)
+    if filtered.empty:
+        raise RuntimeError("No ETF or STOCK instruments found after filtering.")
+    return filtered
 
 
 def _first(payload: dict[str, Any], keys: list[str]) -> Any:
