@@ -9,6 +9,7 @@ from pathlib import Path
 from trading_bot.config import load_secrets, validate_mode
 from trading_bot.constants import RunType
 from trading_bot.logging_setup import setup_logging
+from trading_bot.universe.refresh_universe import run_universe_refresh
 
 REQUIRED_DIRS = (
     "data",
@@ -56,7 +57,8 @@ def _handle_scan(logger, dry_run: bool) -> None:
 
 
 def _handle_universe(logger) -> None:
-    logger.info("UNIVERSE REFRESH STUB – not yet implemented")
+    logger.info("Starting Trading212 universe refresh")
+    run_universe_refresh()
 
 
 def _handle_replay(logger) -> None:
