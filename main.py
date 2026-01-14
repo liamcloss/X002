@@ -9,6 +9,7 @@ from pathlib import Path
 from trading_bot.config import load_secrets, validate_mode
 from trading_bot.constants import RunType
 from trading_bot.logging_setup import setup_logging
+from trading_bot.market_data.fetch_prices import run as fetch_market_prices
 from trading_bot.universe.refresh_universe import run_universe_refresh
 
 REQUIRED_DIRS = (
@@ -53,7 +54,9 @@ def _handle_scan(logger, dry_run: bool) -> None:
     logger.info("Starting daily scan")
     if dry_run:
         logger.info("DRY RUN – no Telegram, no state updates")
-    print("SCAN PIPELINE STUB – not yet implemented")
+    logger.info("MARKET DATA FETCH STUB")
+    fetch_market_prices()
+    logger.info("SCAN PIPELINE STUB – not yet implemented")
 
 
 def _handle_universe(logger) -> None:
