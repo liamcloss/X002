@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
 from dataclasses import dataclass
@@ -43,7 +44,7 @@ class Trading212Client:
     def fetch_instruments(self) -> Trading212Response:
         """Fetch instruments from Trading212 using the documented endpoint."""
 
-        endpoint = "/instruments"
+        endpoint = "/equity/metadata/instruments"
         response = self._get(endpoint)
         response_text = response.text
         json_data = response.json()
@@ -56,9 +57,9 @@ class Trading212Client:
         return response
 
     def _headers(self) -> dict[str, str]:
+        auth = base64.b64encode(f"{self.api_key}:{self.api_secret}".encode()).decode()
         return {
             "Accept": "application/json",
-            "X-API-KEY": self.api_key,
-            "X-API-SECRET": self.api_secret,
+            "Authorization": f"Basic {auth}",
         }
 
