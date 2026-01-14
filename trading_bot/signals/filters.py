@@ -57,9 +57,12 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     recent_high_window = high.tail(20)
     if recent_high_window.isna().any():
         return prepared.iloc[0:0].copy()
-    days_since_20d_high = (len(recent_high_window) - 1) - int(
-        np.argmax(recent_high_window.values)
-    )
+    high_values = recent_high_window.values
+    high_target = high_values.max()
+    if pd.isna(high_target):
+        return prepared.iloc[0:0].copy()
+    last_high_idx = int(np.where(high_values == high_target)[0][-1])
+    days_since_20d_high = (len(high_values) - 1) - last_high_idx
 
     volume_multiple = volume_last / volume_avg_last if volume_avg_last else np.nan
     momentum_5d = (close_last / float(close.shift(5).loc[last_idx]) - 1) if len(prepared) > 5 else np.nan
