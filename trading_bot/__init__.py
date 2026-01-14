@@ -1,5 +1,3 @@
-"""Trading bot package."""
+"""Trading bot package scaffold."""
 
-from trading_bot.config import Config
-
-__all__ = ["Config"]
+__all__ = []

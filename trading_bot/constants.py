@@ -1,21 +1,39 @@
-"""Shared constants for the trading bot."""
+"""Shared constants and enums for the trading bot."""
 
 from __future__ import annotations
 
-from pathlib import Path
+from enum import Enum
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = BASE_DIR / "data"
-LOG_DIR = BASE_DIR / "logs"
-STATE_DIR = BASE_DIR / "state"
 
-BANKROLL_GBP = 1_000.0
-STOP_PCTS = (0.05, 0.06, 0.07)
-TARGET_PCTS = (0.10, 0.12, 0.15, 0.20)
-MIN_RISK_REWARD = 2.0
-MAX_IDEAS = 3
+class Mode(str, Enum):
+    TEST = "TEST"
+    LIVE = "LIVE"
 
-REQUIRED_ENV_VARS = (
+
+class RunType(str, Enum):
+    SCAN = "SCAN"
+    UNIVERSE = "UNIVERSE"
+    REPLAY = "REPLAY"
+
+
+class AlertState(str, Enum):
+    ACTIVE = "ACTIVE"
+    COOLDOWN = "COOLDOWN"
+    INVALIDATED = "INVALIDATED"
+
+
+class InstrumentType(str, Enum):
+    STOCK = "STOCK"
+    ETF = "ETF"
+    CFD = "CFD"
+
+
+class PaperTradeState(str, Enum):
+    OPEN = "OPEN"
+    CLOSED = "CLOSED"
+
+
+REQUIRED_SECRET_KEYS = (
     "T212_API_KEY",
     "T212_API_SECRET",
     "TELEGRAM_BOT_TOKEN",
