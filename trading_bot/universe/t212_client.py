@@ -41,44 +41,13 @@ class Trading212Client:
         self.logger = logger or logging.getLogger("trading_bot")
 
     def fetch_instruments(self) -> Trading212Response:
-        """Fetch instruments from Trading212 using endpoint discovery."""
+        """Fetch instruments from Trading212 using the documented endpoint."""
 
-        endpoint, response_text, json_data = self._discover_instruments_endpoint()
+        endpoint = "/instruments"
+        response = self._get(endpoint)
+        response_text = response.text
+        json_data = response.json()
         return Trading212Response(endpoint=endpoint, raw_text=response_text, json_data=json_data)
-
-    def _discover_instruments_endpoint(self) -> tuple[str, str, Any]:
-        candidates = [
-            "/equity/metadata/instruments",
-            "/equity/instruments",
-            "/metadata/instruments",
-            "/instruments",
-            "/equity/metadata",
-        ]
-        last_error: Exception | None = None
-        for path in candidates:
-            try:
-                response = self._get(path)
-                response_text = response.text
-                json_data = response.json()
-            except Exception as exc:  # noqa: BLE001 - surface discovery errors
-                last_error = exc
-                self.logger.debug("Endpoint discovery failed for %s: %s", path, exc)
-                continue
-
-            if _looks_like_instrument_payload(json_data):
-                self.logger.info("Discovered Trading212 instruments endpoint: %s", path)
-                return path, response_text, json_data
-
-            self.logger.info(
-                "Endpoint %s did not resemble instruments payload; keys=%s",
-                path,
-                _summarize_keys(json_data),
-            )
-
-        message = "Unable to discover Trading212 instruments endpoint."
-        if last_error:
-            raise RuntimeError(message) from last_error
-        raise RuntimeError(message)
 
     def _get(self, path: str) -> requests.Response:
         url = f"{self.base_url}/{path.lstrip('/')}"
@@ -93,20 +62,3 @@ class Trading212Client:
             "X-API-SECRET": self.api_secret,
         }
 
-
-def _looks_like_instrument_payload(payload: Any) -> bool:
-    if isinstance(payload, list):
-        return bool(payload) and all(isinstance(item, dict) for item in payload[:5])
-    if isinstance(payload, dict):
-        for value in payload.values():
-            if isinstance(value, list) and value and all(isinstance(item, dict) for item in value[:5]):
-                return True
-    return False
-
-
-def _summarize_keys(payload: Any) -> list[str]:
-    if isinstance(payload, dict):
-        return sorted(payload.keys())
-    if isinstance(payload, list):
-        return ["list"]
-    return [type(payload).__name__]
