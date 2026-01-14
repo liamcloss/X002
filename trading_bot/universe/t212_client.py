@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import logging
 import os
 from dataclasses import dataclass
@@ -50,27 +49,20 @@ class Trading212Client:
     def _discover_instruments_endpoint(self) -> tuple[str, str, Any]:
         candidates = [
             "/equity/metadata/instruments",
+            "/equity/instruments",
+            "/metadata/instruments",
+            "/instruments",
+            "/equity/metadata",
         ]
         last_error: Exception | None = None
-        last_status: int | None = None
         for path in candidates:
             try:
                 response = self._get(path)
-                last_status = response.status_code
                 response_text = response.text
                 json_data = response.json()
             except Exception as exc:  # noqa: BLE001 - surface discovery errors
                 last_error = exc
-                if isinstance(exc, requests.HTTPError) and exc.response is not None:
-                    last_status = exc.response.status_code
-                    self.logger.debug(
-                        "Endpoint discovery failed for %s: %s (status=%s)",
-                        path,
-                        exc,
-                        exc.response.status_code,
-                    )
-                else:
-                    self.logger.debug("Endpoint discovery failed for %s: %s", path, exc)
+                self.logger.debug("Endpoint discovery failed for %s: %s", path, exc)
                 continue
 
             if _looks_like_instrument_payload(json_data):
@@ -83,10 +75,7 @@ class Trading212Client:
                 _summarize_keys(json_data),
             )
 
-        message = (
-            "Unable to discover Trading212 instruments endpoint. "
-            f"Last status={last_status}"
-        )
+        message = "Unable to discover Trading212 instruments endpoint."
         if last_error:
             raise RuntimeError(message) from last_error
         raise RuntimeError(message)
@@ -98,11 +87,8 @@ class Trading212Client:
         return response
 
     def _headers(self) -> dict[str, str]:
-        credentials = f"{self.api_key}:{self.api_secret}".encode("utf-8")
-        auth_value = base64.b64encode(credentials).decode("utf-8")
         return {
             "Accept": "application/json",
-            "Authorization": f"Basic {auth_value}",
             "X-API-KEY": self.api_key,
             "X-API-SECRET": self.api_secret,
         }
@@ -112,9 +98,6 @@ def _looks_like_instrument_payload(payload: Any) -> bool:
     if isinstance(payload, list):
         return bool(payload) and all(isinstance(item, dict) for item in payload[:5])
     if isinstance(payload, dict):
-        if "items" in payload and isinstance(payload["items"], list):
-            items = payload["items"]
-            return bool(items) and all(isinstance(item, dict) for item in items[:5])
         for value in payload.values():
             if isinstance(value, list) and value and all(isinstance(item, dict) for item in value[:5]):
                 return True
