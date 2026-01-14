@@ -37,6 +37,16 @@ def run_universe_refresh() -> None:
     if state:
         last_attempt = _parse_timestamp(state.get("last_attempt"))
         failure_count = int(state.get("failure_count", 0))
+        if last_attempt and now - last_attempt >= ATTEMPT_COOLDOWN:
+            failure_count = 0
+            _save_state(
+                state_path,
+                {
+                    "last_attempt": state.get("last_attempt"),
+                    "failure_count": failure_count,
+                    "last_success": state.get("last_success"),
+                },
+            )
         if failure_count >= MAX_ATTEMPTS:
             _send_telegram(
                 "❌ Trading212 universe refresh failed after 3 attempts\n"
