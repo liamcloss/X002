@@ -79,11 +79,18 @@ def run_universe_refresh() -> None:
             },
         )
 
+        type_breakdown = summary.get("type_breakdown", {})
+        type_summary = ", ".join(
+            f"{type_name}: {count}" for type_name, count in sorted(type_breakdown.items())
+        )
+        if not type_summary:
+            type_summary = "none"
+
         message = (
             "✅ Trading212 Universe Updated\n"
-            f"Active instruments: {summary['active_instruments']}\n"
-            f"Stocks: {summary['stocks']} | ETFs: {summary['etfs']}\n"
-            f"ISA eligible: {summary['isa_eligible']}"
+            f"Total instruments: {summary['total_instruments']}\n"
+            f"Types: {type_summary}\n"
+            f"Extended hours count: {summary['extended_hours_count']}"
         )
         _send_telegram(message, logger)
         logger.info("Trading212 universe refresh completed successfully.")
