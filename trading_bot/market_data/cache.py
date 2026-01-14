@@ -38,6 +38,13 @@ def load_cache(prices_dir: Path, ticker: str, logger: logging.Logger) -> pd.Data
         if not isinstance(df.index, pd.DatetimeIndex):
             df.index = pd.to_datetime(df.index)
         return df
+    except ImportError as exc:
+        logger.error(
+            "Parquet engine unavailable while reading %s (%s).",
+            path,
+            exc,
+        )
+        return pd.DataFrame()
     except Exception as exc:  # noqa: BLE001 - controlled logging
         logger.error("Cache file for %s is unreadable (%s). Rebuilding.", ticker, exc)
         try:
