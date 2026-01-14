@@ -119,22 +119,9 @@ def _extract_instruments(raw_json: Any, logger: logging.Logger) -> list[Any]:
         top_keys = sorted(raw_json.keys())
         logger.info("Trading212 payload keys: %s", top_keys)
         for value in raw_json.values():
-            if _looks_like_instrument_list(value):
+            if isinstance(value, list):
                 return value
     raise RuntimeError("Unexpected Trading212 payload structure; unable to locate instruments list.")
-
-
-def _looks_like_instrument_list(value: Any) -> bool:
-    if not isinstance(value, list) or not value:
-        return False
-    if not all(isinstance(item, dict) for item in value[:5]):
-        return False
-    instrument_keys = {"id", "instrumentId", "instrument_id", "ticker", "symbol", "name"}
-    sample = value[:5]
-    for item in sample:
-        if instrument_keys.intersection(item.keys()):
-            return True
-    return False
 
 
 def _schema_columns() -> list[str]:

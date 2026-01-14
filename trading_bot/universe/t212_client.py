@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import logging
 import os
 from dataclasses import dataclass
@@ -88,11 +87,8 @@ class Trading212Client:
         return response
 
     def _headers(self) -> dict[str, str]:
-        credentials = f"{self.api_key}:{self.api_secret}".encode("utf-8")
-        auth_value = base64.b64encode(credentials).decode("utf-8")
         return {
             "Accept": "application/json",
-            "Authorization": f"Basic {auth_value}",
             "X-API-KEY": self.api_key,
             "X-API-SECRET": self.api_secret,
         }
@@ -102,9 +98,6 @@ def _looks_like_instrument_payload(payload: Any) -> bool:
     if isinstance(payload, list):
         return bool(payload) and all(isinstance(item, dict) for item in payload[:5])
     if isinstance(payload, dict):
-        if "items" in payload and isinstance(payload["items"], list):
-            items = payload["items"]
-            return bool(items) and all(isinstance(item, dict) for item in items[:5])
         for value in payload.values():
             if isinstance(value, list) and value and all(isinstance(item, dict) for item in value[:5]):
                 return True
