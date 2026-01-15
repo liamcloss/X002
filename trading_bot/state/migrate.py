@@ -33,7 +33,7 @@ def migrate(state: dict[str, Any]) -> dict[str, Any]:
 
 def _ensure_v1_keys(state: dict[str, Any]) -> dict[str, Any]:
     defaults = schema.default_state()
-    for key in ("pullbacks", "alerts", "cooldowns", "history"):
+    for key in ("pullbacks", "alerts", "cooldowns", "history", "paper_reports"):
         if key not in state or not isinstance(state.get(key), type(defaults[key])):
             state[key] = defaults[key]
     state["version"] = schema.SCHEMA_VERSION

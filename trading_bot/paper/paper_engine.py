@@ -349,6 +349,88 @@ def _format_pnl(
     return f'{_format_signed_gbp(pnl_gbp)} ({_format_signed_percent(pnl_pct)})'
 
 
+def _format_summary_gbp(value: float | None) -> str:
+    if value is None:
+        return 'N/A'
+    return _format_signed_gbp(value)
+
+
+def _build_weekly_summary(today: date, lookback_days: int) -> str:
+    start_date = today - timedelta(days=lookback_days - 1)
+    header = (
+        f'📅 Weekly Paper P&L ({start_date.isoformat()} to {today.isoformat()})'
+    )
+
+    store = _load_store()
+    if store.empty:
+        return f'{header}\nNo paper trades yet.'
+
+    closed = store[store['status'] == 'CLOSED'].copy()
+    if closed.empty:
+        return f'{header}\nNo closed paper trades this week.'
+
+    pnls: list[float] = []
+    total_trades = 0
+    for _, trade in closed.iterrows():
+        close_date = _parse_date(trade.get('close_date'))
+        if close_date is None or close_date < start_date or close_date > today:
+            continue
+        total_trades += 1
+        entry_price = _safe_float(trade.get('entry_price'))
+        close_price = _safe_float(trade.get('close_price'))
+        position_size = _safe_float(trade.get('position_size'))
+        pnl = _calculate_pnl(entry_price, close_price, position_size)
+        if pnl is not None:
+            pnls.append(pnl)
+
+    if total_trades == 0:
+        return f'{header}\nNo closed paper trades this week.'
+
+    wins = sum(1 for pnl in pnls if pnl > 0)
+    losses = sum(1 for pnl in pnls if pnl < 0)
+    breakeven = sum(1 for pnl in pnls if pnl == 0)
+
+    total_pnl = sum(pnls) if pnls else None
+    avg_pnl = (total_pnl / len(pnls)) if pnls else None
+    win_rate = (wins / len(pnls) * 100) if pnls else None
+
+    lines = [
+        header,
+        f'Closed trades: {total_trades}',
+        f'Wins: {wins} | Losses: {losses} | Breakeven: {breakeven}',
+        f'Total P&L: {_format_summary_gbp(total_pnl)}',
+        f'Avg P&L: {_format_summary_gbp(avg_pnl)}',
+    ]
+    if win_rate is not None:
+        lines.append(f'Win rate: {win_rate:.1f}%')
+    if total_trades != len(pnls):
+        lines.append(f'P&L unavailable: {total_trades - len(pnls)}')
+    return '\n'.join(lines)
+
+
+def maybe_send_weekly_summary(
+    state: dict[str, Any],
+    today: date,
+    logger: logging.Logger,
+    lookback_days: int = 7,
+) -> None:
+    if today.weekday() != 5:
+        return
+
+    reports = state.setdefault('paper_reports', {})
+    last_sent = _parse_date(reports.get('weekly_summary'))
+    if last_sent and (today - last_sent).days < lookback_days:
+        return
+
+    try:
+        message = _build_weekly_summary(today, lookback_days)
+        send_paper_message(message)
+        reports['weekly_summary'] = today.isoformat()
+        logger.info('Weekly paper trade summary sent.')
+    except Exception as exc:  # noqa: BLE001 - non-fatal reporting failure
+        logger.warning('Weekly paper trade summary failed: %s', exc)
+
+
 def _close_trade(
     store: pd.DataFrame,
     trade_id: str,
@@ -400,10 +482,10 @@ def _notify_close(
     price_str = _format_price(price)
     entry_str = _format_price(entry_price)
     pnl_str = _format_pnl(entry_price, price, position_size)
-    if reason == "STOP":
-        header = f"🟥 PAPER TRADE CLOSED – Stop hit on {ticker}"
+    if reason == 'STOP':
+        header = f'🟥 PAPER TRADE CLOSED – Stop hit on {ticker}'
     else:
-        header = f"🟩 PAPER TRADE CLOSED – Target hit on {ticker}"
+        header = f'🟩 PAPER TRADE CLOSED – Target hit on {ticker}'
     lines = [header, f'Entry: {entry_str} | Exit: {price_str}']
     if pnl_str != 'N/A':
         lines.append(f'P&L: {pnl_str}')
@@ -411,7 +493,8 @@ def _notify_close(
 
 
 __all__ = [
-    "process_open_trades",
-    "open_paper_trade",
-    "get_open_trade_count",
+    'process_open_trades',
+    'open_paper_trade',
+    'get_open_trade_count',
+    'maybe_send_weekly_summary',
 ]
