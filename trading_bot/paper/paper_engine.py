@@ -71,10 +71,23 @@ def process_open_trades(today_date: str) -> None:
             close_reason = "TARGET"
 
         if close_reason:
-            _close_trade(store, trade_id=str(trade["trade_id"]), close_reason=close_reason,
-                         close_price=last_price, close_date=today_date)
+            entry_price = _safe_float(trade.get('entry_price'))
+            position_size = _safe_float(trade.get('position_size'))
+            _close_trade(
+                store,
+                trade_id=str(trade['trade_id']),
+                close_reason=close_reason,
+                close_price=last_price,
+                close_date=today_date,
+            )
             try:
-                _notify_close(ticker=ticker, price=last_price, reason=close_reason)
+                _notify_close(
+                    ticker=ticker,
+                    price=last_price,
+                    reason=close_reason,
+                    entry_price=entry_price,
+                    position_size=position_size,
+                )
             except Exception as exc:  # noqa: BLE001 - persist close even if messaging fails
                 logger.warning('Paper trade close notification failed for %s: %s', ticker, exc)
             updated = True
@@ -140,6 +153,18 @@ def open_paper_trade(candidate: dict, today_date: str) -> None:
     store = pd.concat([store, pd.DataFrame([trade])], ignore_index=True)
     _save_store(store)
     logger.info("Opened paper trade for %s at %.2f", ticker, entry_price)
+    try:
+        _notify_open(
+            ticker=ticker,
+            entry_price=entry_price,
+            stop_price=stop_price,
+            target_price=target_price,
+            position_size=position_size,
+            risk_gbp=risk_gbp,
+            reward_gbp=reward_gbp,
+        )
+    except Exception as exc:  # noqa: BLE001 - keep trade even if messaging fails
+        logger.warning('Paper trade open notification failed for %s: %s', ticker, exc)
 
 
 def get_open_trade_count() -> int:
@@ -250,6 +275,54 @@ def _candidate_amount(value: object | None) -> float | None:
     return numeric
 
 
+def _safe_float(value: object | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if numeric != numeric:  # NaN
+        return None
+    return numeric
+
+
+def _format_price(value: float | None) -> str:
+    if value is None:
+        return 'N/A'
+    return f'${value:.2f}'
+
+
+def _format_gbp(value: float | None) -> str:
+    if value is None:
+        return 'N/A'
+    return f'£{value:.2f}'
+
+
+def _format_signed_gbp(value: float) -> str:
+    sign = '+' if value > 0 else ''
+    return f'{sign}£{value:.2f}'
+
+
+def _format_signed_percent(value: float) -> str:
+    sign = '+' if value > 0 else ''
+    return f'{sign}{value:.2f}%'
+
+
+def _format_pnl(
+    entry_price: float | None,
+    close_price: float | None,
+    position_size: float | None,
+) -> str:
+    if entry_price is None or close_price is None or position_size is None:
+        return 'N/A'
+    if entry_price <= 0:
+        return 'N/A'
+    pnl_pct = (close_price - entry_price) / entry_price * 100
+    pnl_gbp = position_size * (pnl_pct / 100)
+    return f'{_format_signed_gbp(pnl_gbp)} ({_format_signed_percent(pnl_pct)})'
+
+
 def _close_trade(
     store: pd.DataFrame,
     trade_id: str,
@@ -268,13 +341,47 @@ def _close_trade(
     logger.info("Closed paper trade %s (%s)", trade_id, close_reason)
 
 
-def _notify_close(ticker: str, price: float, reason: str) -> None:
-    price_str = f"${price:.2f}"
-    if reason == "STOP":
-        text = f"🟥 PAPER TRADE CLOSED – Stop hit on {ticker} at {price_str}"
-    else:
-        text = f"🟩 PAPER TRADE CLOSED – Target hit on {ticker} at {price_str}"
+def _notify_open(
+    ticker: str,
+    entry_price: float,
+    stop_price: float,
+    target_price: float,
+    position_size: float,
+    risk_gbp: float,
+    reward_gbp: float,
+) -> None:
+    entry_str = _format_price(entry_price)
+    stop_str = _format_price(stop_price)
+    target_str = _format_price(target_price)
+    size_str = _format_gbp(position_size)
+    risk_str = _format_gbp(risk_gbp)
+    reward_str = _format_gbp(reward_gbp)
+    text = (
+        f'🟦 PAPER TRADE OPENED – {ticker} at {entry_str}\n'
+        f'Stop: {stop_str} | Target: {target_str}\n'
+        f'Size: {size_str} | Risk: {risk_str} | Reward: {reward_str}'
+    )
     send_paper_message(text)
+
+
+def _notify_close(
+    ticker: str,
+    price: float,
+    reason: str,
+    entry_price: float | None = None,
+    position_size: float | None = None,
+) -> None:
+    price_str = _format_price(price)
+    entry_str = _format_price(entry_price)
+    pnl_str = _format_pnl(entry_price, price, position_size)
+    if reason == "STOP":
+        header = f"🟥 PAPER TRADE CLOSED – Stop hit on {ticker}"
+    else:
+        header = f"🟩 PAPER TRADE CLOSED – Target hit on {ticker}"
+    lines = [header, f'Entry: {entry_str} | Exit: {price_str}']
+    if pnl_str != 'N/A':
+        lines.append(f'P&L: {pnl_str}')
+    send_paper_message('\n'.join(lines))
 
 
 __all__ = [
