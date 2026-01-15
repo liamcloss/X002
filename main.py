@@ -9,6 +9,7 @@ from pathlib import Path
 from trading_bot.config import load_secrets, validate_mode
 from trading_bot.constants import RunType
 from trading_bot.logging_setup import setup_logging
+from trading_bot.backtest.replay import run_replay
 from trading_bot.market_data.fetch_prices import run as fetch_market_prices
 from trading_bot.universe.refresh_universe import run_universe_refresh
 
@@ -46,6 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     replay_parser = subparsers.add_parser("replay", help="Run replay mode")
     replay_parser.add_argument("--days", type=int, default=90, help="Days to replay")
+    replay_parser.add_argument(
+        "--start-date",
+        type=str,
+        default=None,
+        help="Replay start date in YYYY-MM-DD (optional)",
+    )
 
     return parser
 
@@ -64,8 +71,9 @@ def _handle_universe(logger) -> None:
     run_universe_refresh()
 
 
-def _handle_replay(logger) -> None:
-    logger.info("REPLAY MODE STUB – not yet implemented")
+def _handle_replay(logger, days: int, start_date: str | None) -> None:
+    logger.info("Replay mode starting for %s trading days", days)
+    run_replay(days=days, start_date=start_date)
 
 
 def main() -> int:
@@ -84,7 +92,7 @@ def main() -> int:
     elif args.command == RunType.UNIVERSE.value.lower():
         _handle_universe(logger)
     elif args.command == RunType.REPLAY.value.lower():
-        _handle_replay(logger)
+        _handle_replay(logger, days=args.days, start_date=args.start_date)
     else:
         parser.print_help()
         return 1
