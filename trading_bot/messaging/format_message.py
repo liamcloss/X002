@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 _RANK_EMOJIS = ("🥇", "🥈", "🥉")
 _SEPARATOR = "--------------------------------"
 
@@ -20,12 +22,34 @@ def _format_percentage(value: float | None) -> str:
     return f"{sign}{percent:.2f}%"
 
 
+def _format_volume_multiple(value: float | None) -> str:
+    if value is None:
+        return 'N/A'
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 'N/A'
+    if numeric != numeric:  # NaN
+        return 'N/A'
+    if numeric == 0:
+        return '0'
+
+    abs_value = abs(numeric)
+    order = math.floor(math.log10(abs_value))
+    scale = 10 ** (2 - order)
+    floored = math.floor(abs_value * scale) / scale
+    if numeric < 0:
+        floored = -floored
+    decimals = max(0, 2 - order)
+    return f'{floored:.{decimals}f}'
+
+
 def _format_candidate(candidate: dict, rank: int) -> str:
     emoji = _RANK_EMOJIS[rank] if rank < len(_RANK_EMOJIS) else "⭐"
     symbol = candidate["currency_symbol"]
     momentum = _format_percentage(candidate["momentum_5d"])
     reason = candidate["reason"]
-    volume_multiple = candidate["volume_multiple"]
+    volume_multiple = _format_volume_multiple(candidate.get("volume_multiple"))
 
     lines = [
         f"{emoji} {candidate['ticker']}",

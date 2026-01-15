@@ -72,7 +72,10 @@ def process_open_trades(today_date: str) -> None:
         if close_reason:
             _close_trade(store, trade_id=str(trade["trade_id"]), close_reason=close_reason,
                          close_price=last_price, close_date=today_date)
-            _notify_close(ticker=ticker, price=last_price, reason=close_reason)
+            try:
+                _notify_close(ticker=ticker, price=last_price, reason=close_reason)
+            except Exception as exc:  # noqa: BLE001 - persist close even if messaging fails
+                logger.warning('Paper trade close notification failed for %s: %s', ticker, exc)
             updated = True
 
     if updated:
