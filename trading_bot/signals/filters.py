@@ -21,10 +21,14 @@ def _has_required_columns(df: pd.DataFrame) -> bool:
     return REQUIRED_COLUMNS.issubset(df.columns)
 
 
-def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
+def apply_filters(
+    df: pd.DataFrame,
+    max_pct_from_20d_high: float = 0.01,
+) -> pd.DataFrame:
     """
     Input:
         df contains OHLCV + indicators for a single ticker
+        max_pct_from_20d_high controls the maximum pullback from the 20d high
     Output:
         Returns a row with computed metrics if all filters pass,
         otherwise returns empty dataframe.
@@ -71,7 +75,7 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
 
     trend_ok = close_last > ma20_last and ma20_last > ma50_last
     breakout_ok = (
-        pct_from_20d_high <= 0.01
+        pct_from_20d_high <= max_pct_from_20d_high
         and days_since_20d_high <= 4
     )
     volume_ok = volume_multiple >= 1.5

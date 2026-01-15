@@ -6,6 +6,7 @@ import json
 import logging
 import random
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -18,14 +19,44 @@ from trading_bot.market_data import cache, yfinance_client
 RETRY_STATE_FILE = "prices_retry_state.json"
 MARKET_STATE_FILE = "market_data_state.json"
 
-BATCH_SIZE = 10
-RATE_LIMIT_DELAY_RANGE = (1.0, 2.0)
-BURST_BATCHES = 3
-BURST_COOLDOWN_SECONDS = 4.0
+BATCH_SIZE = 20
+RATE_LIMIT_DELAY_RANGE = (0.6, 1.2)
+BURST_BATCHES = 4
+BURST_COOLDOWN_SECONDS = 3.0
+ADAPTIVE_PENALTY_STEP = 0.4
+ADAPTIVE_PENALTY_DECAY = 0.2
+ADAPTIVE_MAX_PENALTY = 3.0
 RETRY_STATE_FILE = "prices_retry_state.json"
 MAX_CONSECUTIVE_FAILURES = 3
 MAX_DEFERRALS = 3
 DEFERRAL_WINDOW = (7, 14)
+
+
+@dataclass
+class AdaptiveRateLimiter:
+    base_delay_range: tuple[float, float]
+    burst_batches: int
+    burst_cooldown_seconds: float
+    penalty: float = 0.0
+    consecutive_failures: int = 0
+
+    def record_success(self) -> None:
+        if self.consecutive_failures:
+            self.consecutive_failures = 0
+        self.penalty = max(0.0, self.penalty - ADAPTIVE_PENALTY_DECAY)
+
+    def record_failure(self) -> None:
+        self.consecutive_failures += 1
+        penalty_step = ADAPTIVE_PENALTY_STEP * self.consecutive_failures
+        self.penalty = min(ADAPTIVE_MAX_PENALTY, self.penalty + penalty_step)
+
+    def next_delay(self, batch_index: int) -> tuple[float, float]:
+        if self.burst_batches and batch_index % self.burst_batches == 0:
+            base_delay = self.burst_cooldown_seconds
+        else:
+            base_delay = random.uniform(*self.base_delay_range)
+        delay = base_delay * (1.0 + self.penalty)
+        return base_delay, delay
 
 
 def run() -> None:
@@ -73,6 +104,12 @@ def run() -> None:
         "Refreshing market data for %s tickers across %s batches.", total, total_batches
     )
 
+    rate_limiter = AdaptiveRateLimiter(
+        base_delay_range=RATE_LIMIT_DELAY_RANGE,
+        burst_batches=BURST_BATCHES,
+        burst_cooldown_seconds=BURST_COOLDOWN_SECONDS,
+    )
+
     for batch_index, batch in enumerate(batches, start=1):
         batch_start = time.monotonic()
         processed_before_batch = processed_total
@@ -100,7 +137,10 @@ def run() -> None:
                 successes,
                 failures,
                 processed_total - processed_before_batch,
-                logger,
+                rate_limiter,
+                batch_requested=False,
+                batch_failed=False,
+                logger=logger,
             )
             continue
 
@@ -130,7 +170,10 @@ def run() -> None:
                 successes,
                 failures,
                 processed_total - processed_before_batch,
-                logger,
+                rate_limiter,
+                batch_requested=True,
+                batch_failed=True,
+                logger=logger,
             )
             continue
 
@@ -166,7 +209,10 @@ def run() -> None:
             successes,
             failures,
             processed_total - processed_before_batch,
-            logger,
+            rate_limiter,
+            batch_requested=True,
+            batch_failed=False,
+            logger=logger,
         )
 
     run_duration = time.monotonic() - run_start
@@ -369,14 +415,27 @@ def _parse_iso(value: str | None) -> datetime | None:
         return None
 
 
-def _enforce_rate_limit(batch_index: int, total_batches: int, logger: logging.Logger) -> None:
+def _enforce_rate_limit(
+    batch_index: int,
+    total_batches: int,
+    logger: logging.Logger,
+    rate_limiter: AdaptiveRateLimiter,
+    batch_failed: bool,
+) -> None:
     if batch_index >= total_batches:
         return
-    if batch_index % BURST_BATCHES == 0:
-        delay = BURST_COOLDOWN_SECONDS
+    if batch_failed:
+        rate_limiter.record_failure()
     else:
-        delay = random.uniform(*RATE_LIMIT_DELAY_RANGE)
-    logger.debug("Sleeping %.1fs to remain within yfinance rate limits.", delay)
+        rate_limiter.record_success()
+    base_delay, delay = rate_limiter.next_delay(batch_index)
+    logger.debug(
+        'Sleeping %.1fs (base %.1fs, penalty %.2f, streak %s) to respect yfinance limits.',
+        delay,
+        base_delay,
+        rate_limiter.penalty,
+        rate_limiter.consecutive_failures,
+    )
     time.sleep(delay)
 
 
@@ -390,6 +449,9 @@ def _finalize_batch(
     successes: int,
     failures: int,
     batch_processed: int,
+    rate_limiter: AdaptiveRateLimiter | None,
+    batch_requested: bool,
+    batch_failed: bool,
     logger: logging.Logger,
 ) -> None:
     duration = time.monotonic() - batch_start
@@ -411,7 +473,8 @@ def _finalize_batch(
         successes,
         failures,
     )
-    _enforce_rate_limit(batch_index, total_batches, logger)
+    if rate_limiter and batch_requested:
+        _enforce_rate_limit(batch_index, total_batches, logger, rate_limiter, batch_failed)
 
 
 def _last_business_day() -> pd.Timestamp:

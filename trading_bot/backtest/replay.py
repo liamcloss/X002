@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -252,7 +253,7 @@ def _scan_day(
         pullback = detect_pullback(history)
         _update_pullback_state(state, ticker, pullback, replay_date)
 
-        filtered = apply_filters(history)
+        filtered = apply_filters(history, max_pct_from_20d_high=0.05)
         if filtered.empty:
             continue
 
@@ -435,7 +436,18 @@ def _currency_symbol(currency_code: str) -> str:
 
 
 def _tradingview_url(ticker: str) -> str:
-    return f"https://www.tradingview.com/symbols/{ticker}/"
+    symbol = _tradingview_symbol(ticker)
+    return f"https://www.tradingview.com/symbols/{symbol}/"
+
+
+def _tradingview_symbol(ticker: str) -> str:
+    if not ticker:
+        return ""
+    symbol = ticker.strip().upper()
+    for suffix in ("EQ", "ETF", "ETN", "ETC", "CFD"):
+        symbol = re.sub(rf"_(?:[A-Z]{{2,3}}_)?{suffix}$", "", symbol)
+        symbol = re.sub(rf"_{suffix}_[A-Z]{{2,3}}$", "", symbol)
+    return symbol
 
 
 def _format_replay_message(

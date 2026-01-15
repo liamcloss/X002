@@ -11,6 +11,7 @@ from trading_bot.constants import RunType
 from trading_bot.logging_setup import setup_logging
 from trading_bot.backtest.replay import run_replay
 from trading_bot.market_data.fetch_prices import run as fetch_market_prices
+from trading_bot.scan_pipeline import run_daily_scan
 from trading_bot.universe.refresh_universe import run_universe_refresh
 
 REQUIRED_DIRS = (
@@ -58,12 +59,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _handle_scan(logger, dry_run: bool) -> None:
-    logger.info("Starting daily scan")
+    logger.info('Starting daily scan')
     if dry_run:
-        logger.info("DRY RUN – no Telegram, no state updates")
-    logger.info("MARKET DATA FETCH STUB")
+        logger.info('DRY RUN – no Telegram, no state updates')
+    logger.info('Refreshing market data cache')
     fetch_market_prices()
-    logger.info("SCAN PIPELINE STUB – not yet implemented")
+    run_daily_scan(dry_run=dry_run, logger=logger)
 
 
 def _handle_universe(logger) -> None:

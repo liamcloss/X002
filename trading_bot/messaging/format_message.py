@@ -49,7 +49,6 @@ def _format_candidate(candidate: dict, rank: int) -> str:
         f"Risk: £{candidate['risk_gbp']}",
         f"Reward: £{candidate['reward_gbp']}",
         "",
-        f"ISA Eligible: {'Yes' if candidate['isa_eligible'] else 'No'}",
         f"Chart: {candidate['tradingview_url']}",
     ]
     return "\n".join(lines)
@@ -129,7 +128,6 @@ def format_universe_success(summary: dict) -> str:
         (
             f"Stocks: {summary['stocks']} | ETFs: {summary['etfs']}"
         ),
-        f"ISA eligible: {summary['isa_eligible']}",
     ]
     return "\n".join(lines)
 
