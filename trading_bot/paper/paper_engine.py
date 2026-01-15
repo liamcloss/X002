@@ -11,7 +11,7 @@ import pandas as pd
 from trading_bot import config
 from trading_bot.config import LIVE_MODE_MAX_RISK, LIVE_MODE_POSITION_MAX, LIVE_MODE_POSITION_MIN
 from trading_bot.market_data import cache
-from trading_bot.messaging.telegram_client import send_message
+from trading_bot.messaging.telegram_client import send_paper_message
 from trading_bot.signals.risk_geometry import find_risk_geometry
 
 logger = logging.getLogger("trading_bot")
@@ -274,7 +274,7 @@ def _notify_close(ticker: str, price: float, reason: str) -> None:
         text = f"🟥 PAPER TRADE CLOSED – Stop hit on {ticker} at {price_str}"
     else:
         text = f"🟩 PAPER TRADE CLOSED – Target hit on {ticker} at {price_str}"
-    send_message(text)
+    send_paper_message(text)
 
 
 __all__ = [
