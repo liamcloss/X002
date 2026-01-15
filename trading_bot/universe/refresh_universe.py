@@ -33,24 +33,44 @@ def run_universe_refresh() -> None:
     state_path = summary_dir / "universe_refresh_state.json"
     now = datetime.now(timezone.utc)
     state = _load_state(state_path)
+    last_attempt_raw = state.get("last_attempt") if state else None
+    last_success_raw = state.get("last_success") if state else None
+    last_attempt = _parse_timestamp(last_attempt_raw)
+    last_success = _parse_timestamp(last_success_raw)
+    failure_count = int(state.get("failure_count", 0)) if state else 0
 
-    if state:
-        last_attempt = _parse_timestamp(state.get("last_attempt"))
-        last_success = _parse_timestamp(state.get("last_success"))
-        failure_count = int(state.get("failure_count", 0))
-        if failure_count >= MAX_ATTEMPTS:
-            _send_telegram(
-                "❌ Trading212 universe refresh failed after 3 attempts\n"
-                "Last successful universe retained",
-                logger,
+    if failure_count >= MAX_ATTEMPTS:
+        if last_attempt and now - last_attempt >= ATTEMPT_COOLDOWN:
+            logger.info(
+                "Resetting universe refresh failure counter after %s cooldown.", ATTEMPT_COOLDOWN
+            )
+            failure_count = 0
+            _save_state(
+                state_path,
+                {
+                    "last_attempt": last_attempt_raw,
+                    "failure_count": failure_count,
+                    "last_success": last_success_raw,
+                },
+            )
+        else:
+            remaining = (
+                ATTEMPT_COOLDOWN - (now - last_attempt)
+                if last_attempt
+                else ATTEMPT_COOLDOWN
+            )
+            logger.info(
+                "Universe refresh skipped; waiting %.1fh after repeated failures.",
+                remaining.total_seconds() / 3600,
             )
             return
-        if failure_count == 0 and last_success and now - last_success < ATTEMPT_COOLDOWN:
-            logger.info("Universe refresh skipped; last success within 24 hours.")
-            return
-        if failure_count > 0 and last_attempt and now - last_attempt < timedelta(minutes=1):
-            logger.info("Universe refresh skipped; last attempt was just moments ago.")
-            return
+
+    if failure_count == 0 and last_success and now - last_success < ATTEMPT_COOLDOWN:
+        logger.info("Universe refresh skipped; last success within 24 hours.")
+        return
+    if failure_count > 0 and last_attempt and now - last_attempt < timedelta(minutes=1):
+        logger.info("Universe refresh skipped; last attempt was just moments ago.")
+        return
 
     api_key = os.environ.get("T212_API_KEY", "")
     api_secret = os.environ.get("T212_API_SECRET", "")
@@ -95,13 +115,13 @@ def run_universe_refresh() -> None:
         _send_telegram(message, logger)
         logger.info("Trading212 universe refresh completed successfully.")
     except Exception as exc:  # noqa: BLE001 - report failure details
-        failure_count = int(state.get("failure_count", 0)) + 1 if state else 1
+        failure_count += 1
         _save_state(
             state_path,
             {
                 "last_attempt": now.isoformat(),
                 "failure_count": failure_count,
-                "last_success": state.get("last_success") if state else None,
+                "last_success": last_success_raw,
             },
         )
         if failure_count >= MAX_ATTEMPTS:

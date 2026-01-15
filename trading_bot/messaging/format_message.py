@@ -6,9 +6,18 @@ _RANK_EMOJIS = ("🥇", "🥈", "🥉")
 _SEPARATOR = "--------------------------------"
 
 
-def _format_percentage(value: float) -> str:
-    sign = "+" if value > 0 else ""
-    return f"{sign}{value:.2f}%"
+def _scale_to_percent(value: float | None) -> float:
+    if value is None:
+        return float("nan")
+    return float(value) * 100
+
+
+def _format_percentage(value: float | None) -> str:
+    percent = _scale_to_percent(value)
+    if percent != percent:  # NaN
+        return "N/A"
+    sign = "+" if percent > 0 else ""
+    return f"{sign}{percent:.2f}%"
 
 
 def _format_candidate(candidate: dict, rank: int) -> str:
@@ -24,14 +33,14 @@ def _format_candidate(candidate: dict, rank: int) -> str:
         f"Reason: {reason}, {volume_multiple}× volume, {momentum}",
         "",
         f"Price: {symbol}{candidate['price']:.2f} {candidate['currency_code']}",
-        f"20D High Distance: {candidate['pct_from_20d_high']:.2f}%",
+        f"20D High Distance: {_scale_to_percent(candidate['pct_from_20d_high']):.2f}%",
         "",
         (
-            f"Stop: −{candidate['stop_pct']}% → "
+            f"Stop: −{_scale_to_percent(candidate['stop_pct']):.2f}% → "
             f"{symbol}{candidate['stop_price']:.2f}"
         ),
         (
-            f"Target: +{candidate['target_pct']}% → "
+            f"Target: +{_scale_to_percent(candidate['target_pct']):.2f}% → "
             f"{symbol}{candidate['target_price']:.2f}"
         ),
         f"R:R = {candidate['rr']:.2f}",

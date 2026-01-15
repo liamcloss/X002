@@ -1,4 +1,4 @@
-"""Messaging package for Telegram notifications."""
+HJp"""Messaging package for Telegram notifications."""
 
 from trading_bot.messaging.format_message import (
     format_daily_scan_message,
