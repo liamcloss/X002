@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import logging
+from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import pandas as pd
 
+from trading_bot import config
 from trading_bot.config import LIVE_MODE_MAX_RISK, LIVE_MODE_POSITION_MAX, LIVE_MODE_POSITION_MIN
 from trading_bot.market_data import cache
-from trading_bot.messaging.telegram_client import send_message
+from trading_bot.messaging.telegram_client import send_paper_message
 from trading_bot.signals.risk_geometry import find_risk_geometry
 
 logger = logging.getLogger("trading_bot")
@@ -70,10 +73,23 @@ def process_open_trades(today_date: str) -> None:
             close_reason = "TARGET"
 
         if close_reason:
-            _close_trade(store, trade_id=str(trade["trade_id"]), close_reason=close_reason,
-                         close_price=last_price, close_date=today_date)
+            entry_price = _safe_float(trade.get('entry_price'))
+            position_size = _safe_float(trade.get('position_size'))
+            _close_trade(
+                store,
+                trade_id=str(trade['trade_id']),
+                close_reason=close_reason,
+                close_price=last_price,
+                close_date=today_date,
+            )
             try:
-                _notify_close(ticker=ticker, price=last_price, reason=close_reason)
+                _notify_close(
+                    ticker=ticker,
+                    price=last_price,
+                    reason=close_reason,
+                    entry_price=entry_price,
+                    position_size=position_size,
+                )
             except Exception as exc:  # noqa: BLE001 - persist close even if messaging fails
                 logger.warning('Paper trade close notification failed for %s: %s', ticker, exc)
             updated = True
@@ -110,9 +126,13 @@ def open_paper_trade(candidate: dict, today_date: str) -> None:
     stop_price = float(candidate.get("stop_price", entry_price * (1 - stop_pct)))
     target_price = float(candidate.get("target_price", entry_price * (1 + target_pct)))
 
-    position_size = _position_size_for_risk(stop_pct)
-    risk_gbp = round(position_size * stop_pct, 2)
-    reward_gbp = round(position_size * target_pct, 2)
+    position_size = _candidate_position_size(candidate, stop_pct)
+    risk_gbp = _candidate_amount(candidate.get('risk_gbp'))
+    reward_gbp = _candidate_amount(candidate.get('reward_gbp'))
+    if risk_gbp is None:
+        risk_gbp = round(position_size * stop_pct, 2)
+    if reward_gbp is None:
+        reward_gbp = round(position_size * target_pct, 2)
 
     trade = {
         "trade_id": uuid4().hex,
@@ -135,6 +155,18 @@ def open_paper_trade(candidate: dict, today_date: str) -> None:
     store = pd.concat([store, pd.DataFrame([trade])], ignore_index=True)
     _save_store(store)
     logger.info("Opened paper trade for %s at %.2f", ticker, entry_price)
+    try:
+        _notify_open(
+            ticker=ticker,
+            entry_price=entry_price,
+            stop_price=stop_price,
+            target_price=target_price,
+            position_size=position_size,
+            risk_gbp=risk_gbp,
+            reward_gbp=reward_gbp,
+        )
+    except Exception as exc:  # noqa: BLE001 - keep trade even if messaging fails
+        logger.warning('Paper trade open notification failed for %s: %s', ticker, exc)
 
 
 def get_open_trade_count() -> int:
@@ -211,12 +243,192 @@ def _candidate_geometry(candidate: dict, entry_price: float) -> dict:
     return geometry
 
 
-def _position_size_for_risk(stop_pct: float) -> int:
+def _position_size_for_risk(stop_pct: float) -> float:
+    if config.MODE == 'TEST':
+        return float(config.TEST_MODE_POSITION_SIZE)
     if stop_pct <= 0:
-        return int(LIVE_MODE_POSITION_MIN)
+        return float(LIVE_MODE_POSITION_MIN)
     target_size = LIVE_MODE_MAX_RISK / stop_pct
     bounded = max(LIVE_MODE_POSITION_MIN, min(LIVE_MODE_POSITION_MAX, target_size))
-    return int(round(bounded))
+    return float(round(bounded))
+
+
+def _candidate_position_size(candidate: dict, stop_pct: float) -> float:
+    raw_size = candidate.get('position_size')
+    if raw_size is not None:
+        try:
+            numeric = float(raw_size)
+        except (TypeError, ValueError):
+            numeric = None
+        if numeric is not None and numeric > 0:
+            return numeric
+    return _position_size_for_risk(stop_pct)
+
+
+def _candidate_amount(value: object | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if numeric < 0:
+        return None
+    return numeric
+
+
+def _safe_float(value: object | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if numeric != numeric:  # NaN
+        return None
+    return numeric
+
+
+def _parse_date(value: object | None) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, date):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _calculate_pnl(
+    entry_price: float | None,
+    close_price: float | None,
+    position_size: float | None,
+) -> float | None:
+    if entry_price is None or close_price is None or position_size is None:
+        return None
+    if entry_price <= 0:
+        return None
+    return position_size * ((close_price - entry_price) / entry_price)
+
+
+def _format_price(value: float | None) -> str:
+    if value is None:
+        return 'N/A'
+    return f'${value:.2f}'
+
+
+def _format_gbp(value: float | None) -> str:
+    if value is None:
+        return 'N/A'
+    return f'£{value:.2f}'
+
+
+def _format_signed_gbp(value: float) -> str:
+    sign = '+' if value > 0 else ''
+    return f'{sign}£{value:.2f}'
+
+
+def _format_signed_percent(value: float) -> str:
+    sign = '+' if value > 0 else ''
+    return f'{sign}{value:.2f}%'
+
+
+def _format_pnl(
+    entry_price: float | None,
+    close_price: float | None,
+    position_size: float | None,
+) -> str:
+    pnl_gbp = _calculate_pnl(entry_price, close_price, position_size)
+    if pnl_gbp is None or entry_price is None or close_price is None:
+        return 'N/A'
+    pnl_pct = (close_price - entry_price) / entry_price * 100
+    return f'{_format_signed_gbp(pnl_gbp)} ({_format_signed_percent(pnl_pct)})'
+
+
+def _format_summary_gbp(value: float | None) -> str:
+    if value is None:
+        return 'N/A'
+    return _format_signed_gbp(value)
+
+
+def _build_weekly_summary(today: date, lookback_days: int) -> str:
+    start_date = today - timedelta(days=lookback_days - 1)
+    header = (
+        f'📅 Weekly Paper P&L ({start_date.isoformat()} to {today.isoformat()})'
+    )
+
+    store = _load_store()
+    if store.empty:
+        return f'{header}\nNo paper trades yet.'
+
+    closed = store[store['status'] == 'CLOSED'].copy()
+    if closed.empty:
+        return f'{header}\nNo closed paper trades this week.'
+
+    pnls: list[float] = []
+    total_trades = 0
+    for _, trade in closed.iterrows():
+        close_date = _parse_date(trade.get('close_date'))
+        if close_date is None or close_date < start_date or close_date > today:
+            continue
+        total_trades += 1
+        entry_price = _safe_float(trade.get('entry_price'))
+        close_price = _safe_float(trade.get('close_price'))
+        position_size = _safe_float(trade.get('position_size'))
+        pnl = _calculate_pnl(entry_price, close_price, position_size)
+        if pnl is not None:
+            pnls.append(pnl)
+
+    if total_trades == 0:
+        return f'{header}\nNo closed paper trades this week.'
+
+    wins = sum(1 for pnl in pnls if pnl > 0)
+    losses = sum(1 for pnl in pnls if pnl < 0)
+    breakeven = sum(1 for pnl in pnls if pnl == 0)
+
+    total_pnl = sum(pnls) if pnls else None
+    avg_pnl = (total_pnl / len(pnls)) if pnls else None
+    win_rate = (wins / len(pnls) * 100) if pnls else None
+
+    lines = [
+        header,
+        f'Closed trades: {total_trades}',
+        f'Wins: {wins} | Losses: {losses} | Breakeven: {breakeven}',
+        f'Total P&L: {_format_summary_gbp(total_pnl)}',
+        f'Avg P&L: {_format_summary_gbp(avg_pnl)}',
+    ]
+    if win_rate is not None:
+        lines.append(f'Win rate: {win_rate:.1f}%')
+    if total_trades != len(pnls):
+        lines.append(f'P&L unavailable: {total_trades - len(pnls)}')
+    return '\n'.join(lines)
+
+
+def maybe_send_weekly_summary(
+    state: dict[str, Any],
+    today: date,
+    logger: logging.Logger,
+    lookback_days: int = 7,
+) -> None:
+    if today.weekday() != 5:
+        return
+
+    reports = state.setdefault('paper_reports', {})
+    last_sent = _parse_date(reports.get('weekly_summary'))
+    if last_sent and (today - last_sent).days < lookback_days:
+        return
+
+    try:
+        message = _build_weekly_summary(today, lookback_days)
+        send_paper_message(message)
+        reports['weekly_summary'] = today.isoformat()
+        logger.info('Weekly paper trade summary sent.')
+    except Exception as exc:  # noqa: BLE001 - non-fatal reporting failure
+        logger.warning('Weekly paper trade summary failed: %s', exc)
 
 
 def _close_trade(
@@ -237,17 +449,52 @@ def _close_trade(
     logger.info("Closed paper trade %s (%s)", trade_id, close_reason)
 
 
-def _notify_close(ticker: str, price: float, reason: str) -> None:
-    price_str = f"${price:.2f}"
-    if reason == "STOP":
-        text = f"🟥 PAPER TRADE CLOSED – Stop hit on {ticker} at {price_str}"
+def _notify_open(
+    ticker: str,
+    entry_price: float,
+    stop_price: float,
+    target_price: float,
+    position_size: float,
+    risk_gbp: float,
+    reward_gbp: float,
+) -> None:
+    entry_str = _format_price(entry_price)
+    stop_str = _format_price(stop_price)
+    target_str = _format_price(target_price)
+    size_str = _format_gbp(position_size)
+    risk_str = _format_gbp(risk_gbp)
+    reward_str = _format_gbp(reward_gbp)
+    text = (
+        f'🟦 PAPER TRADE OPENED – {ticker} at {entry_str}\n'
+        f'Stop: {stop_str} | Target: {target_str}\n'
+        f'Size: {size_str} | Risk: {risk_str} | Reward: {reward_str}'
+    )
+    send_paper_message(text)
+
+
+def _notify_close(
+    ticker: str,
+    price: float,
+    reason: str,
+    entry_price: float | None = None,
+    position_size: float | None = None,
+) -> None:
+    price_str = _format_price(price)
+    entry_str = _format_price(entry_price)
+    pnl_str = _format_pnl(entry_price, price, position_size)
+    if reason == 'STOP':
+        header = f'🟥 PAPER TRADE CLOSED – Stop hit on {ticker}'
     else:
-        text = f"🟩 PAPER TRADE CLOSED – Target hit on {ticker} at {price_str}"
-    send_message(text)
+        header = f'🟩 PAPER TRADE CLOSED – Target hit on {ticker}'
+    lines = [header, f'Entry: {entry_str} | Exit: {price_str}']
+    if pnl_str != 'N/A':
+        lines.append(f'P&L: {pnl_str}')
+    send_paper_message('\n'.join(lines))
 
 
 __all__ = [
-    "process_open_trades",
-    "open_paper_trade",
-    "get_open_trade_count",
+    'process_open_trades',
+    'open_paper_trade',
+    'get_open_trade_count',
+    'maybe_send_weekly_summary',
 ]

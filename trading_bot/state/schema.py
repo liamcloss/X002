@@ -18,4 +18,5 @@ def default_state() -> State:
         "alerts": {},
         "cooldowns": {},
         "history": [],
+        "paper_reports": {},
     }

@@ -16,7 +16,11 @@ from trading_bot.market_data import cache
 from trading_bot.market_data.fetch_prices import run as refresh_market_data
 from trading_bot.messaging.format_message import format_daily_scan_message, format_error_message
 from trading_bot.messaging import telegram_client
-from trading_bot.paper.paper_engine import open_paper_trade, process_open_trades
+from trading_bot.paper.paper_engine import (
+    maybe_send_weekly_summary,
+    open_paper_trade,
+    process_open_trades,
+)
 from trading_bot.signals.filters import apply_filters
 from trading_bot.signals.pullback import detect_pullback
 from trading_bot.signals.rank import rank_candidates
@@ -171,6 +175,7 @@ def _run_pipeline(dry_run: bool, logger: logging.Logger) -> None:
         return
 
     process_open_trades(today_str)
+    maybe_send_weekly_summary(working_state, today, logger)
     if candidates:
         open_paper_trade(candidates[0], today_str)
 

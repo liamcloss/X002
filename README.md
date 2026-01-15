@@ -27,7 +27,7 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
 # 2) Install dependencies
 pip install --upgrade pip
-pip install -r requirements.txt
+pip install pandas numpy yfinance requests python-dotenv pyarrow
 
 # 3) Create a .env file with your secrets (see below)
 cp .env.example .env  # or create manually
