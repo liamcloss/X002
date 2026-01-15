@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 from trading_bot.constants import Mode, REQUIRED_SECRET_KEYS
 
-MODE = "TEST"  # or "LIVE"
+MODE = "LIVE"  # or "TEST"
 
 TEST_MODE_POSITION_SIZE = 25
 TEST_MODE_MAX_RISK = 2

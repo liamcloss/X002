@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import pandas as pd
@@ -287,6 +289,32 @@ def _safe_float(value: object | None) -> float | None:
     return numeric
 
 
+def _parse_date(value: object | None) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, date):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _calculate_pnl(
+    entry_price: float | None,
+    close_price: float | None,
+    position_size: float | None,
+) -> float | None:
+    if entry_price is None or close_price is None or position_size is None:
+        return None
+    if entry_price <= 0:
+        return None
+    return position_size * ((close_price - entry_price) / entry_price)
+
+
 def _format_price(value: float | None) -> str:
     if value is None:
         return 'N/A'
@@ -314,12 +342,10 @@ def _format_pnl(
     close_price: float | None,
     position_size: float | None,
 ) -> str:
-    if entry_price is None or close_price is None or position_size is None:
-        return 'N/A'
-    if entry_price <= 0:
+    pnl_gbp = _calculate_pnl(entry_price, close_price, position_size)
+    if pnl_gbp is None or entry_price is None or close_price is None:
         return 'N/A'
     pnl_pct = (close_price - entry_price) / entry_price * 100
-    pnl_gbp = position_size * (pnl_pct / 100)
     return f'{_format_signed_gbp(pnl_gbp)} ({_format_signed_percent(pnl_pct)})'
 
 
