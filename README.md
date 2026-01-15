@@ -27,7 +27,7 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
 # 2) Install dependencies
 pip install --upgrade pip
-pip install pandas numpy yfinance requests python-dotenv
+pip install pandas numpy yfinance requests python-dotenv pyarrow
 
 # 3) Create a .env file with your secrets (see below)
 cp .env.example .env  # or create manually
@@ -36,7 +36,7 @@ cp .env.example .env  # or create manually
 python main.py scan --dry-run
 ```
 
-> **Note**: This repository does not include a `requirements.txt` yet, so dependencies are listed explicitly above.
+> **Note**: `requirements.txt` includes a Parquet engine (`pyarrow`) so pandas can read/write `.parquet` files used by the cache and universe refresh flows.
 
 ## Configuration
 
@@ -113,7 +113,8 @@ python main.py replay --start-date 2023-01-01 --days 60
 
 - **Missing environment variables**: Ensure `.env` exists and includes all four required keys.
 - **Invalid MODE**: Set `MODE = "TEST"` or `MODE = "LIVE"` in `trading_bot/config.py`.
-- **Dependency errors**: Re-run the `pip install` line in [Quick start](#quick-start) inside your venv.
+- **Parquet engine errors**: Install `pyarrow` (included in `requirements.txt`) so pandas can read/write `.parquet` files used by caching/universe refresh.
+- **Dependency errors**: Re-run the `pip install -r requirements.txt` line in [Quick start](#quick-start) inside your venv.
 
 ---
 
