@@ -6,7 +6,7 @@ import json
 import logging
 import random
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -14,6 +14,9 @@ import pandas as pd
 
 from trading_bot.logging_setup import setup_logging
 from trading_bot.market_data import cache, yfinance_client
+
+RETRY_STATE_FILE = "prices_retry_state.json"
+MARKET_STATE_FILE = "market_data_state.json"
 
 BATCH_SIZE = 10
 RATE_LIMIT_DELAY_RANGE = (1.0, 2.0)
@@ -37,6 +40,16 @@ def run() -> None:
 
     retry_state_path = base_dir / "state" / RETRY_STATE_FILE
     retry_state = _load_retry_state(retry_state_path)
+    market_state_path = base_dir / "state" / MARKET_STATE_FILE
+    market_state = _load_market_state(market_state_path)
+    last_run_ts = market_state.get("last_run")
+    last_duration = market_state.get("last_duration_seconds")
+    if last_run_ts:
+        logger.info(
+            "Previous market refresh: %s (%ss)",
+            last_run_ts,
+            f"{last_duration:.1f}" if isinstance(last_duration, (int, float)) else "unknown",
+        )
 
     tickers = _load_active_tickers(universe_path, logger)
     if not tickers:
@@ -49,11 +62,20 @@ def run() -> None:
     total = len(tickers)
     successes = 0
     failures = 0
+    processed_total = 0
     last_business_day = _last_business_day()
-
     batches = list(_batches(tickers, BATCH_SIZE))
     total_batches = len(batches)
+    batch_durations: list[float] = []
+    run_start = time.monotonic()
+
+    logger.info(
+        "Refreshing market data for %s tickers across %s batches.", total, total_batches
+    )
+
     for batch_index, batch in enumerate(batches, start=1):
+        batch_start = time.monotonic()
+        processed_before_batch = processed_total
         logger.info("Starting batch %s with %s tickers.", batch_index, len(batch))
         current_time = datetime.now()
         batch_payload = _prepare_batch(
@@ -67,8 +89,19 @@ def run() -> None:
 
         if not batch_payload:
             logger.info("Batch %s: all tickers up to date or deferred.", batch_index)
-            successes += len(batch)
-            _enforce_rate_limit(batch_index, total_batches, logger)
+            processed_total += len(batch)
+            _finalize_batch(
+                batch_index,
+                total_batches,
+                batch_start,
+                batch_durations,
+                processed_total,
+                total,
+                successes,
+                failures,
+                processed_total - processed_before_batch,
+                logger,
+            )
             continue
 
         min_start = min(payload["start"] for payload in batch_payload.values())
@@ -83,9 +116,22 @@ def run() -> None:
         except yfinance_client.YFinanceError as exc:
             logger.error("Batch %s failed: %s", batch_index, exc)
             failures += len(batch_payload)
+            processed_total += len(batch_payload)
+            now = datetime.now()
             for alias in batch_payload:
-                _record_failure(alias, retry_state, retry_state_path, logger, datetime.now())
-            _enforce_rate_limit(batch_index, total_batches, logger)
+                _record_failure(alias, retry_state, retry_state_path, logger, now)
+            _finalize_batch(
+                batch_index,
+                total_batches,
+                batch_start,
+                batch_durations,
+                processed_total,
+                total,
+                successes,
+                failures,
+                processed_total - processed_before_batch,
+                logger,
+            )
             continue
 
         for alias, payload in batch_payload.items():
@@ -101,21 +147,43 @@ def run() -> None:
                     last_date=payload["last_date"],
                 )
                 successes += 1
+                processed_total += 1
                 _record_success(alias, retry_state, retry_state_path)
             except yfinance_client.TickerDownloadError as exc:
                 logger.warning(
                     "Skipping %s (%s) due to data error: %s", base_ticker, alias, exc
                 )
                 failures += 1
+                processed_total += 1
                 _record_failure(alias, retry_state, retry_state_path, logger, datetime.now())
-        logger.info("Finished batch %s.", batch_index)
-        _enforce_rate_limit(batch_index, total_batches, logger)
+        _finalize_batch(
+            batch_index,
+            total_batches,
+            batch_start,
+            batch_durations,
+            processed_total,
+            total,
+            successes,
+            failures,
+            processed_total - processed_before_batch,
+            logger,
+        )
 
+    run_duration = time.monotonic() - run_start
     logger.info(
-        "Market data refresh complete. Total: %s, Success: %s, Failed: %s",
+        "Market data refresh complete. Total: %s, Success: %s, Failed: %s, Processed: %s",
         total,
         successes,
         failures,
+        processed_total,
+    )
+    logger.info("Total refresh duration: %.1fs", run_duration)
+    _save_market_state(
+        market_state_path,
+        {
+            "last_run": datetime.now(timezone.utc).isoformat(),
+            "last_duration_seconds": round(run_duration, 1),
+        },
     )
 
 
@@ -136,6 +204,20 @@ def _load_retry_state(path: Path) -> dict[str, dict[str, Any]]:
 
 
 def _save_retry_state(path: Path, state: dict[str, dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def _load_market_state(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def _save_market_state(path: Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
@@ -296,6 +378,40 @@ def _enforce_rate_limit(batch_index: int, total_batches: int, logger: logging.Lo
         delay = random.uniform(*RATE_LIMIT_DELAY_RANGE)
     logger.debug("Sleeping %.1fs to remain within yfinance rate limits.", delay)
     time.sleep(delay)
+
+
+def _finalize_batch(
+    batch_index: int,
+    total_batches: int,
+    batch_start: float,
+    batch_durations: list[float],
+    processed_total: int,
+    total_tickers: int,
+    successes: int,
+    failures: int,
+    batch_processed: int,
+    logger: logging.Logger,
+) -> None:
+    duration = time.monotonic() - batch_start
+    batch_durations.append(duration)
+    remaining = max(total_batches - batch_index, 0)
+    avg_duration = sum(batch_durations) / len(batch_durations)
+    eta = remaining * avg_duration
+    logger.info(
+        "Batch %s/%s completed in %.1fs (avg %.1fs, ETA %.1fs). "
+        "Batch processed %s tickers; overall %s/%s completed (success %s, fail %s).",
+        batch_index,
+        total_batches,
+        duration,
+        avg_duration,
+        eta,
+        batch_processed,
+        processed_total,
+        total_tickers,
+        successes,
+        failures,
+    )
+    _enforce_rate_limit(batch_index, total_batches, logger)
 
 
 def _last_business_day() -> pd.Timestamp:

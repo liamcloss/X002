@@ -9,7 +9,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from trading_bot.state import migrate, schema
+from trading_bot.state import schema
+from trading_bot.state.migrate import migrate as migrate_payload
 
 logger = logging.getLogger("trading_bot")
 
@@ -38,7 +39,7 @@ def load_state() -> State:
     except json.JSONDecodeError as exc:
         raise ValueError(f"State file is invalid JSON: {state_path}") from exc
 
-    state = migrate.migrate(payload)
+    state = migrate_payload(payload)
     save_state(state)
     return state
 
