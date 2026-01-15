@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pandas as pd
 
+from trading_bot import config
 from trading_bot.config import LIVE_MODE_MAX_RISK, LIVE_MODE_POSITION_MAX, LIVE_MODE_POSITION_MIN
 from trading_bot.market_data import cache
 from trading_bot.messaging.telegram_client import send_message
@@ -110,9 +111,13 @@ def open_paper_trade(candidate: dict, today_date: str) -> None:
     stop_price = float(candidate.get("stop_price", entry_price * (1 - stop_pct)))
     target_price = float(candidate.get("target_price", entry_price * (1 + target_pct)))
 
-    position_size = _position_size_for_risk(stop_pct)
-    risk_gbp = round(position_size * stop_pct, 2)
-    reward_gbp = round(position_size * target_pct, 2)
+    position_size = _candidate_position_size(candidate, stop_pct)
+    risk_gbp = _candidate_amount(candidate.get('risk_gbp'))
+    reward_gbp = _candidate_amount(candidate.get('reward_gbp'))
+    if risk_gbp is None:
+        risk_gbp = round(position_size * stop_pct, 2)
+    if reward_gbp is None:
+        reward_gbp = round(position_size * target_pct, 2)
 
     trade = {
         "trade_id": uuid4().hex,
@@ -211,12 +216,38 @@ def _candidate_geometry(candidate: dict, entry_price: float) -> dict:
     return geometry
 
 
-def _position_size_for_risk(stop_pct: float) -> int:
+def _position_size_for_risk(stop_pct: float) -> float:
+    if config.MODE == 'TEST':
+        return float(config.TEST_MODE_POSITION_SIZE)
     if stop_pct <= 0:
-        return int(LIVE_MODE_POSITION_MIN)
+        return float(LIVE_MODE_POSITION_MIN)
     target_size = LIVE_MODE_MAX_RISK / stop_pct
     bounded = max(LIVE_MODE_POSITION_MIN, min(LIVE_MODE_POSITION_MAX, target_size))
-    return int(round(bounded))
+    return float(round(bounded))
+
+
+def _candidate_position_size(candidate: dict, stop_pct: float) -> float:
+    raw_size = candidate.get('position_size')
+    if raw_size is not None:
+        try:
+            numeric = float(raw_size)
+        except (TypeError, ValueError):
+            numeric = None
+        if numeric is not None and numeric > 0:
+            return numeric
+    return _position_size_for_risk(stop_pct)
+
+
+def _candidate_amount(value: object | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if numeric < 0:
+        return None
+    return numeric
 
 
 def _close_trade(
