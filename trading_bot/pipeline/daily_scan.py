@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import copy
 import logging
-import re
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import pandas as pd
 
@@ -25,6 +25,7 @@ from trading_bot.signals.filters import apply_filters
 from trading_bot.signals.pullback import detect_pullback
 from trading_bot.signals.rank import rank_candidates
 from trading_bot.signals.risk_geometry import find_risk_geometry
+from trading_bot.symbols import tradingview_symbol
 from trading_bot.state import (
     add_pullback,
     cleanup_expired_cooldowns,
@@ -212,11 +213,13 @@ def _ensure_cache_initialized(base_dir: Path, logger: logging.Logger) -> Path | 
 def _build_ticker_map(universe_df: pd.DataFrame) -> dict[str, dict[str, Any]]:
     ticker_map: dict[str, dict[str, Any]] = {}
     for _, row in universe_df.iterrows():
-        ticker = str(row.get("ticker", "")).strip().upper()
-        if not ticker:
+        raw_ticker = str(row.get('ticker', '')).strip()
+        if not raw_ticker:
             continue
-        ticker_map[ticker] = {
-            "currency_code": str(row.get("currency_code", "")),
+        ticker_map[raw_ticker.upper()] = {
+            'currency_code': str(row.get('currency_code', '')),
+            'raw_ticker': raw_ticker,
+            'short_name': str(row.get('short_name', '')).strip(),
         }
     return ticker_map
 
@@ -262,14 +265,19 @@ def _rank_and_build_candidates(
     ranked_count = int(ranked.shape[0])
 
     top_ranked = ranked.head(3)
-    candidates = [
-        _build_candidate(
-            row=row,
-            meta=candidate_metadata[str(row["ticker"])],
-            currency_code=str(ticker_map[str(row["ticker"])]["currency_code"]),
+    candidates = []
+    for _, row in top_ranked.iterrows():
+        key = str(row['ticker'])
+        entry = ticker_map[key]
+        candidates.append(
+            _build_candidate(
+                row=row,
+                meta=candidate_metadata[key],
+                currency_code=str(entry['currency_code']),
+                raw_ticker=str(entry.get('raw_ticker', key)),
+                short_name=str(entry.get('short_name', '')).strip() or None,
+            )
         )
-        for _, row in top_ranked.iterrows()
-    ]
     return candidates, ranked_count
 
 
@@ -277,6 +285,8 @@ def _build_candidate(
     row: pd.Series,
     meta: dict[str, float],
     currency_code: str,
+    raw_ticker: str,
+    short_name: str | None,
 ) -> dict[str, Any]:
     price = float(meta["price"])
     stop_pct = float(meta["stop_pct"])
@@ -288,10 +298,12 @@ def _build_candidate(
     risk_gbp = round(position_size * stop_pct, 2)
     reward_gbp = round(position_size * target_pct, 2)
 
-    ticker = str(row["ticker"])
+    ticker = str(row['ticker'])
+    display_ticker = short_name or raw_ticker or ticker
 
     return {
         "ticker": ticker,
+        "display_ticker": display_ticker,
         "currency_symbol": _currency_symbol(currency_code),
         "momentum_5d": float(row["momentum_5d"]),
         "reason": "Pullback",
@@ -307,7 +319,7 @@ def _build_candidate(
         "position_size": position_size,
         "risk_gbp": risk_gbp,
         "reward_gbp": reward_gbp,
-        "tradingview_url": _tradingview_url(ticker),
+        "tradingview_url": _tradingview_url(raw_ticker),
     }
 
 
@@ -326,15 +338,10 @@ def _currency_symbol(currency_code: str) -> str:
 
 
 def _tradingview_url(ticker: str) -> str:
-    symbol = _tradingview_symbol(ticker)
-    return f"https://www.tradingview.com/symbols/{symbol}/"
-
-
-def _tradingview_symbol(ticker: str) -> str:
-    if not ticker:
-        return ""
-    symbol = ticker.strip().upper()
-    for suffix in ("EQ", "ETF", "ETN", "ETC", "CFD"):
-        symbol = re.sub(rf"_(?:[A-Z]{{2,3}}_)?{suffix}$", "", symbol)
-        symbol = re.sub(rf"_{suffix}_[A-Z]{{2,3}}$", "", symbol)
-    return symbol
+    symbol = tradingview_symbol(ticker)
+    if not symbol:
+        return ''
+    safe_symbol = quote(symbol.replace(' ', ''))
+    if ':' in symbol:
+        return f'https://www.tradingview.com/chart/?symbol={safe_symbol}'
+    return f'https://www.tradingview.com/symbols/{safe_symbol}/'

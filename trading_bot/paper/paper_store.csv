@@ -1,1 +1,2 @@
 trade_id,ticker,entry_date,entry_price,stop_pct,stop_price,target_pct,target_price,position_size,risk_gbp,reward_gbp,status,close_date,close_price,close_reason
+8fb7b47101a244e4981e8a5e282545af,GLDD_US_EQ,2026-01-16,15.26039981842041,0.05,14.497379827499389,0.1,16.786439800262453,200.0,10.0,20.0,OPEN,,,

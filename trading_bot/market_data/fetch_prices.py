@@ -15,9 +15,11 @@ import pandas as pd
 
 from trading_bot.logging_setup import setup_logging
 from trading_bot.market_data import cache, yfinance_client
+from trading_bot.symbols import yfinance_symbol
 
 RETRY_STATE_FILE = "prices_retry_state.json"
 MARKET_STATE_FILE = "market_data_state.json"
+SYMBOL_MAP_FILE = 'market_symbol_map.json'
 
 BATCH_SIZE = 20
 RATE_LIMIT_DELAY_RANGE = (0.6, 1.2)
@@ -73,6 +75,8 @@ def run() -> None:
     retry_state = _load_retry_state(retry_state_path)
     market_state_path = base_dir / "state" / MARKET_STATE_FILE
     market_state = _load_market_state(market_state_path)
+    symbol_map_path = base_dir / 'state' / SYMBOL_MAP_FILE
+    symbol_map = _load_symbol_map(symbol_map_path)
     last_run_ts = market_state.get("last_run")
     last_duration = market_state.get("last_duration_seconds")
     if last_run_ts:
@@ -122,7 +126,9 @@ def run() -> None:
             retry_state,
             current_time,
             last_business_day,
+            symbol_map,
         )
+        _save_symbol_map(symbol_map_path, symbol_map)
 
         if not batch_payload:
             logger.info("Batch %s: all tickers up to date or deferred.", batch_index)
@@ -268,6 +274,20 @@ def _save_market_state(path: Path, state: dict[str, Any]) -> None:
     path.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
+def _load_symbol_map(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding='utf-8'))
+    except json.JSONDecodeError:
+        return {}
+
+
+def _save_symbol_map(path: Path, symbol_map: dict[str, str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(symbol_map, indent=2), encoding='utf-8')
+
+
 def _record_success(alias: str, state: dict[str, dict[str, Any]], path: Path) -> None:
     if alias in state:
         del state[alias]
@@ -314,7 +334,12 @@ def _record_failure(
 
 
 def _select_market_identifier(row: pd.Series, fallback: str) -> str:
-    for column in ("short_name", "isin"):
+    short_name = _normalize_identifier(row.get('short_name'))
+    return yfinance_symbol(fallback, short_name=short_name)
+
+
+def _legacy_market_identifier(row: pd.Series, fallback: str) -> str:
+    for column in ('short_name', 'isin'):
         candidate = _normalize_identifier(row.get(column))
         if candidate:
             return candidate
@@ -347,12 +372,13 @@ def _load_active_tickers(universe_path: Path, logger: logging.Logger) -> list[di
             logger.warning("Skipping universe row with missing ticker: %s", row.to_dict())
             continue
         alias = _select_market_identifier(row, base_ticker)
+        legacy_alias = _legacy_market_identifier(row, base_ticker)
         normalized_alias = alias.upper()
         if normalized_alias in seen_aliases:
             logger.warning("Skipping duplicate market identifier %s for %s", alias, base_ticker)
             continue
         seen_aliases.add(normalized_alias)
-        tickers.append({"ticker": base_ticker, "alias": alias})
+        tickers.append({"ticker": base_ticker, "alias": alias, "legacy_alias": legacy_alias})
     return tickers
 
 
@@ -368,12 +394,26 @@ def _prepare_batch(
     retry_state: dict[str, dict[str, Any]],
     current_time: datetime,
     last_business_day: pd.Timestamp,
+    symbol_map: dict[str, str],
 ) -> dict[str, dict[str, object]]:
     batch_payload: dict[str, dict[str, object]] = {}
 
     for entry in tickers:
         base_ticker = entry["ticker"]
         alias = entry["alias"]
+        legacy_alias = entry.get('legacy_alias', '')
+        previous_alias = symbol_map.get(base_ticker) or legacy_alias
+        alias_changed = bool(
+            previous_alias and previous_alias.upper() != alias.upper()
+        )
+        if alias_changed:
+            logger.warning(
+                'Market identifier changed for %s: %s -> %s. Rebuilding cache.',
+                base_ticker,
+                previous_alias,
+                alias,
+            )
+        symbol_map[base_ticker] = alias
         info = retry_state.get(alias, {})
         if info.get("blacklisted"):
             logger.debug("Skipping %s because it is blacklisted.", alias)
@@ -381,8 +421,12 @@ def _prepare_batch(
         if not _should_attempt(info, current_time):
             logger.debug("Deferring %s until %s.", alias, info.get("next_try"))
             continue
-        existing = cache.load_cache(prices_dir, base_ticker, logger)
-        last_date = cache.last_cached_date(existing)
+        if alias_changed:
+            existing = pd.DataFrame()
+            last_date = None
+        else:
+            existing = cache.load_cache(prices_dir, base_ticker, logger)
+            last_date = cache.last_cached_date(existing)
         if last_date is not None and last_date >= last_business_day:
             logger.info("%s already up to date (last cached %s).", base_ticker, last_date.date())
             continue

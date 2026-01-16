@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional, TypedDict
+from urllib.parse import quote
 
 import pandas as pd
 
@@ -17,6 +17,7 @@ from trading_bot.logging_setup import setup_logging
 from trading_bot.market_data import cache
 from trading_bot.messaging.format_message import format_daily_scan_message
 from trading_bot.signals import apply_filters, detect_pullback, find_risk_geometry, rank_candidates
+from trading_bot.symbols import tradingview_symbol
 from trading_bot.state import (
     add_pullback,
     cleanup_expired_cooldowns,
@@ -436,18 +437,13 @@ def _currency_symbol(currency_code: str) -> str:
 
 
 def _tradingview_url(ticker: str) -> str:
-    symbol = _tradingview_symbol(ticker)
-    return f"https://www.tradingview.com/symbols/{symbol}/"
-
-
-def _tradingview_symbol(ticker: str) -> str:
-    if not ticker:
-        return ""
-    symbol = ticker.strip().upper()
-    for suffix in ("EQ", "ETF", "ETN", "ETC", "CFD"):
-        symbol = re.sub(rf"_(?:[A-Z]{{2,3}}_)?{suffix}$", "", symbol)
-        symbol = re.sub(rf"_{suffix}_[A-Z]{{2,3}}$", "", symbol)
-    return symbol
+    symbol = tradingview_symbol(ticker)
+    if not symbol:
+        return ''
+    safe_symbol = quote(symbol.replace(' ', ''))
+    if ':' in symbol:
+        return f'https://www.tradingview.com/chart/?symbol={safe_symbol}'
+    return f'https://www.tradingview.com/symbols/{safe_symbol}/'
 
 
 def _format_replay_message(

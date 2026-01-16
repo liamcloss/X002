@@ -51,8 +51,9 @@ def _format_candidate(candidate: dict, rank: int) -> str:
     reason = candidate["reason"]
     volume_multiple = _format_volume_multiple(candidate.get("volume_multiple"))
 
+    display_ticker = candidate.get('display_ticker') or candidate['ticker']
     lines = [
-        f"{emoji} {candidate['ticker']}",
+        f"{emoji} {display_ticker}",
         _SEPARATOR,
         f"Reason: {reason}, {volume_multiple}× volume, {momentum}",
         "",
