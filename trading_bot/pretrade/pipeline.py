@@ -14,6 +14,7 @@ from trading_bot.paper import get_open_trade_count
 from trading_bot.pretrade.notifier import build_pretrade_message, send_pretrade_message
 from trading_bot.pretrade.pretrade_gate import evaluate_pretrade
 from trading_bot.pretrade.spread_gate import SpreadGate
+from trading_bot.pretrade.spread_sampler import collect_spread_sample, write_spread_report
 
 SETUP_FILENAME = 'SetupCandidates.json'
 
@@ -40,6 +41,7 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
     spread_gate = SpreadGate(logger=logger)
 
     results: list[dict[str, Any]] = []
+    spread_samples: list[dict[str, Any]] = []
     for setup in setups:
         parsed = _parse_setup_candidate(setup)
         if parsed is None:
@@ -75,6 +77,16 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
         ask = quote.get('ask')
         last = quote.get('last')
         spread = quote.get('spread')
+        sample = collect_spread_sample(
+            symbol=symbol,
+            spread=spread,
+            last=last,
+            quote_timestamp=quote.get('timestamp') if isinstance(quote, dict) else None,
+            checked_at=now,
+            logger=logger,
+        )
+        if sample:
+            spread_samples.append(sample)
         is_valid, invalid_reason = spread_gate.evaluate(quote)
         if not is_valid:
             results.append(
@@ -106,6 +118,12 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
         results.append(result)
 
     _write_results(base_dir, results, now, logger)
+    try:
+        report_path = write_spread_report(base_dir, spread_samples, now, logger)
+        if report_path:
+            logger.info('Spread report written: %s', report_path)
+    except Exception as exc:  # noqa: BLE001 - spread reporting must not break pretrade
+        logger.error('Failed to write spread report: %s', exc)
 
     _print_results_table(results)
     message = build_pretrade_message(results, checked_at)
