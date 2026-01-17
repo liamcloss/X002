@@ -15,6 +15,7 @@ from trading_bot.config import LIVE_MODE_MAX_RISK, LIVE_MODE_POSITION_MAX, LIVE_
 from trading_bot.market_data import cache
 from trading_bot.messaging.telegram_client import send_paper_message
 from trading_bot.signals.risk_geometry import find_risk_geometry
+from trading_bot.breakout_gate import validate_trade
 
 logger = logging.getLogger("trading_bot")
 
@@ -133,6 +134,19 @@ def open_paper_trade(candidate: dict, today_date: str) -> None:
         risk_gbp = round(position_size * stop_pct, 2)
     if reward_gbp is None:
         reward_gbp = round(position_size * target_pct, 2)
+
+    validation_payload = {
+        **candidate,
+        "position_gbp": position_size,
+        "risk_gbp": risk_gbp,
+        "reward_gbp": reward_gbp,
+        "stop_percent": stop_pct,
+        "target_percent": target_pct,
+    }
+    validation = validate_trade(validation_payload, open_trades.shape[0])
+    if not validation.passed:
+        logger.info("Paper trade blocked by breakout gate: %s", "; ".join(validation.reasons))
+        return
 
     trade = {
         "trade_id": uuid4().hex,
