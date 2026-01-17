@@ -13,6 +13,7 @@ from trading_bot.backtest.replay import run_replay
 from trading_bot.pipeline.daily_scan import run_daily_scan
 from trading_bot.universe.refresh_universe import run_universe_refresh
 from trading_bot.pretrade.pipeline import run_pretrade
+from trading_bot.status import run_status
 
 REQUIRED_DIRS = (
     "data",
@@ -46,6 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("universe", help="Refresh trading universe")
     subparsers.add_parser("pretrade", help="Run pre-trade viability check")
+    subparsers.add_parser("status", help="Show system status")
 
     replay_parser = subparsers.add_parser("replay", help="Run replay mode")
     replay_parser.add_argument("--days", type=int, default=90, help="Days to replay")
@@ -81,6 +83,11 @@ def _handle_pretrade(logger) -> None:
     run_pretrade()
 
 
+def _handle_status(logger) -> None:
+    logger.info('Status report requested')
+    run_status(Path(__file__).resolve().parent, logger=logger)
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
@@ -100,6 +107,8 @@ def main() -> int:
         _handle_replay(logger, days=args.days, start_date=args.start_date)
     elif args.command == RunType.PRETRADE.value.lower():
         _handle_pretrade(logger)
+    elif args.command == RunType.STATUS.value.lower():
+        _handle_status(logger)
     else:
         parser.print_help()
         return 1

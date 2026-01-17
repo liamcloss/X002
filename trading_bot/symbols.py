@@ -109,7 +109,15 @@ def tradingview_symbol(ticker: str, short_name: str | None = None) -> str:
     return candidate
 
 
+def t212_market_code(ticker: str) -> str | None:
+    """Extract the Trading212 market code from a ticker."""
+
+    _, market_code = _parse_t212_ticker(ticker)
+    return market_code or None
+
+
 __all__ = [
     'tradingview_symbol',
+    't212_market_code',
     'yfinance_symbol',
 ]
