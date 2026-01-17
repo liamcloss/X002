@@ -14,6 +14,7 @@ class RunType(str, Enum):
     SCAN = "SCAN"
     UNIVERSE = "UNIVERSE"
     REPLAY = "REPLAY"
+    PRETRADE = "PRETRADE"
 
 
 class AlertState(str, Enum):

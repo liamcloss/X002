@@ -102,3 +102,5 @@ def extract_ticker_data(batch_data: pd.DataFrame, ticker: str) -> pd.DataFrame:
 
     ticker_data.index = pd.to_datetime(ticker_data.index)
     return ticker_data
+
+from src.market_data.yfinance_client import get_quote  # noqa: E402,F401

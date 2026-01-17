@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -21,6 +21,7 @@ from trading_bot.paper.paper_engine import (
     open_paper_trade,
     process_open_trades,
 )
+from trading_bot.pretrade.setup_candidates import write_setup_candidates
 from trading_bot.signals.filters import apply_filters
 from trading_bot.signals.pullback import detect_pullback
 from trading_bot.signals.rank import rank_candidates
@@ -38,6 +39,7 @@ from trading_bot.state import (
     save_state,
     in_cooldown,
 )
+from trading_bot.universe.active import ensure_active_column
 
 
 _CURRENCY_SYMBOLS = {
@@ -49,6 +51,8 @@ _CURRENCY_SYMBOLS = {
     "CAD": "C$",
     "AUD": "A$",
 }
+
+ALERT_CANDIDATE_LIMIT = 3
 
 
 def run_daily_scan(dry_run: bool = False) -> None:
@@ -149,18 +153,26 @@ def _run_pipeline(dry_run: bool, logger: logging.Logger) -> None:
             logger.warning("Skipping %s due to data error: %s", ticker, exc, exc_info=True)
             skipped += 1
 
-    candidates, ranked_count = _rank_and_build_candidates(candidate_rows, candidate_metadata, ticker_map)
+    pretrade_limit = _pretrade_candidate_limit()
+    setup_candidates, ranked_count = _rank_and_build_candidates(
+        candidate_rows,
+        candidate_metadata,
+        ticker_map,
+        limit=pretrade_limit,
+    )
+    alert_candidates = setup_candidates[:ALERT_CANDIDATE_LIMIT]
 
-    if candidates and not dry_run:
-        for candidate in candidates:
+    if alert_candidates and not dry_run:
+        for candidate in alert_candidates:
             mark_alerted(working_state, candidate["ticker"], today)
 
     data_as_of_str = data_as_of.isoformat() if data_as_of else "Unknown"
-    generated_at = datetime.now().isoformat(timespec="seconds")
+    generated_at = datetime.now().isoformat(timespec='seconds')
+    generated_at_utc = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
     message = format_daily_scan_message(
         date=today_str,
         mode=config.MODE,
-        candidates=candidates,
+        candidates=alert_candidates,
         scanned_count=len(ticker_map),
         valid_count=ranked_count,
         data_as_of=data_as_of_str,
@@ -175,10 +187,22 @@ def _run_pipeline(dry_run: bool, logger: logging.Logger) -> None:
         print(message)
         return
 
+    try:
+        write_setup_candidates(
+            base_dir,
+            setup_candidates,
+            mode=config.MODE,
+            data_as_of=data_as_of_str,
+            generated_at=generated_at_utc,
+        )
+        logger.info('SetupCandidates.json updated.')
+    except OSError as exc:
+        logger.warning('Failed to write SetupCandidates.json: %s', exc)
+
     process_open_trades(today_str)
     maybe_send_weekly_summary(working_state, today, logger)
-    if candidates:
-        open_paper_trade(candidates[0], today_str)
+    if alert_candidates:
+        open_paper_trade(alert_candidates[0], today_str)
 
     telegram_client.send_message(message)
     save_state(working_state)
@@ -186,15 +210,10 @@ def _run_pipeline(dry_run: bool, logger: logging.Logger) -> None:
 
 def _load_universe(base_dir: Path, logger: logging.Logger) -> pd.DataFrame:
     path = base_dir / "universe" / "clean" / "universe.parquet"
-    if not path.exists():
-        raise FileNotFoundError(f"Universe file missing: {path}")
-    df = pd.read_parquet(path)
+    df = ensure_active_column(path, logger)
     if df.empty:
         return df
-    if "active" in df.columns:
-        df = df[df["active"].fillna(False).astype(bool)].copy()
-    else:
-        logger.warning("Universe missing 'active' column; using all rows.")
+    df = df[df["active"].fillna(False).astype(bool)].copy()
     df = df.dropna(subset=["ticker"])
     return df
 
@@ -255,6 +274,8 @@ def _rank_and_build_candidates(
     candidate_rows: list[dict[str, float | str]],
     candidate_metadata: dict[str, dict[str, float]],
     ticker_map: dict[str, dict[str, Any]],
+    *,
+    limit: int,
 ) -> tuple[list[dict[str, Any]], int]:
     candidate_df = pd.DataFrame(candidate_rows)
     if candidate_df.empty:
@@ -264,7 +285,7 @@ def _rank_and_build_candidates(
     ranked = ranked.sort_values(by=["score", "ticker"], ascending=[False, True])
     ranked_count = int(ranked.shape[0])
 
-    top_ranked = ranked.head(3)
+    top_ranked = ranked.head(limit)
     candidates = []
     for _, row in top_ranked.iterrows():
         key = str(row['ticker'])
@@ -279,6 +300,15 @@ def _rank_and_build_candidates(
             )
         )
     return candidates, ranked_count
+
+
+def _pretrade_candidate_limit() -> int:
+    limit = getattr(config, 'PRETRADE_CANDIDATE_LIMIT', ALERT_CANDIDATE_LIMIT)
+    try:
+        limit_value = int(limit)
+    except (TypeError, ValueError):
+        return ALERT_CANDIDATE_LIMIT
+    return max(ALERT_CANDIDATE_LIMIT, limit_value)
 
 
 def _build_candidate(
@@ -304,6 +334,7 @@ def _build_candidate(
     return {
         "ticker": ticker,
         "display_ticker": display_ticker,
+        "raw_ticker": raw_ticker,
         "currency_symbol": _currency_symbol(currency_code),
         "momentum_5d": float(row["momentum_5d"]),
         "reason": "Pullback",

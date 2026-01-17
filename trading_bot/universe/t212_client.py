@@ -50,9 +50,14 @@ class Trading212Client:
         json_data = response.json()
         return Trading212Response(endpoint=endpoint, raw_text=response_text, json_data=json_data)
 
-    def _get(self, path: str) -> requests.Response:
+    def _get(self, path: str, params: dict[str, str] | None = None) -> requests.Response:
         url = f"{self.base_url}/{path.lstrip('/')}"
-        response = self.session.get(url, headers=self._headers(), timeout=self.timeout)
+        response = self.session.get(
+            url,
+            headers=self._headers(),
+            params=params,
+            timeout=self.timeout,
+        )
         response.raise_for_status()
         return response
 

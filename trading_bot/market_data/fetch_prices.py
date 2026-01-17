@@ -16,6 +16,7 @@ import pandas as pd
 from trading_bot.logging_setup import setup_logging
 from trading_bot.market_data import cache, yfinance_client
 from trading_bot.symbols import yfinance_symbol
+from trading_bot.universe.active import deactivate_universe_ticker, ensure_active_column
 
 RETRY_STATE_FILE = "prices_retry_state.json"
 MARKET_STATE_FILE = "market_data_state.json"
@@ -164,8 +165,17 @@ def run() -> None:
             failures += len(batch_payload)
             processed_total += len(batch_payload)
             now = datetime.now()
-            for alias in batch_payload:
-                _record_failure(alias, retry_state, retry_state_path, logger, now)
+            for alias, payload in batch_payload.items():
+                _record_failure(
+                    alias,
+                    payload["base_ticker"],
+                    retry_state,
+                    retry_state_path,
+                    logger,
+                    now,
+                    universe_path,
+                    ticker_failure=False,
+                )
             _finalize_batch(
                 batch_index,
                 total_batches,
@@ -204,7 +214,16 @@ def run() -> None:
                 )
                 failures += 1
                 processed_total += 1
-                _record_failure(alias, retry_state, retry_state_path, logger, datetime.now())
+                _record_failure(
+                    alias,
+                    base_ticker,
+                    retry_state,
+                    retry_state_path,
+                    logger,
+                    datetime.now(),
+                    universe_path,
+                    ticker_failure=True,
+                )
         _finalize_batch(
             batch_index,
             total_batches,
@@ -296,10 +315,13 @@ def _record_success(alias: str, state: dict[str, dict[str, Any]], path: Path) ->
 
 def _record_failure(
     alias: str,
+    base_ticker: str,
     state: dict[str, dict[str, Any]],
     path: Path,
     logger: logging.Logger,
     now: datetime,
+    universe_path: Path,
+    ticker_failure: bool,
 ) -> None:
     entry = state.setdefault(alias, {})
     last_failure = _parse_iso(entry.get("last_failure"))
@@ -312,6 +334,22 @@ def _record_failure(
         entry["consecutive_days"] = 1
     entry["last_failure"] = now.isoformat()
     entry["last_attempt"] = now.isoformat()
+
+    if ticker_failure:
+        last_ticker_failure = _parse_iso(entry.get('last_ticker_failure'))
+        delta_ticker_days = (
+            (now.date() - last_ticker_failure.date()).days if last_ticker_failure else None
+        )
+        if delta_ticker_days == 1:
+            entry['consecutive_ticker_days'] = entry.get('consecutive_ticker_days', 0) + 1
+        else:
+            entry['consecutive_ticker_days'] = 1
+        entry['last_ticker_failure'] = now.isoformat()
+
+        if entry['consecutive_ticker_days'] >= MAX_CONSECUTIVE_FAILURES:
+            if not entry.get('deactivated'):
+                if deactivate_universe_ticker(universe_path, base_ticker, logger):
+                    entry['deactivated'] = True
 
     if entry["consecutive_days"] >= MAX_CONSECUTIVE_FAILURES:
         deferral_days = random.randint(*DEFERRAL_WINDOW)
@@ -354,12 +392,10 @@ def _normalize_identifier(value: object | None) -> str | None:
 
 
 def _load_active_tickers(universe_path: Path, logger: logging.Logger) -> list[dict[str, str]]:
-    df = pd.read_parquet(universe_path)
-
-    if "active" in df.columns:
-        df = df[df["active"].fillna(False)]
-    else:
-        logger.warning("Universe missing 'active' column; defaulting to all rows.")
+    df = ensure_active_column(universe_path, logger)
+    if df.empty:
+        return []
+    df = df[df["active"].fillna(False)]
 
     if "ticker" not in df.columns:
         raise RuntimeError("Universe parquet missing required 'ticker' column.")
