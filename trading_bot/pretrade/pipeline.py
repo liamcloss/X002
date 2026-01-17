@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from src.market_data import yfinance_client
+from trading_bot.execution.open_trades import get_live_open_trade_count
 from trading_bot.symbols import yfinance_symbol
-from trading_bot.paper import get_open_trade_count
 from trading_bot.pretrade.notifier import build_pretrade_message, send_pretrade_message
 from trading_bot.pretrade.pretrade_gate import evaluate_pretrade
 from trading_bot.pretrade.spread_gate import SpreadGate
@@ -29,10 +29,10 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
     setups = _load_setup_candidates(setup_path, logger)
 
     try:
-        open_trades_count = get_open_trade_count()
+        open_trades_count = get_live_open_trade_count(logger=logger)
     except Exception as exc:  # noqa: BLE001 - safe fallback for trade cap
-        logger.error('Failed to load open trades count: %s', exc)
-        open_trades_count = 2
+        logger.error('Failed to load live open trades count: %s', exc)
+        open_trades_count = 0
 
     now = datetime.now(timezone.utc)
     checked_at = now.strftime('%Y-%m-%dT%H:%M:%SZ')

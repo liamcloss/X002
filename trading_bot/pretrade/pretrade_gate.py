@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from trading_bot import config
+
 TRADE_CAP = 2
 
 
@@ -73,7 +75,8 @@ def _apply_rules(
     real_rr: float,
     open_trades_count: int,
 ) -> tuple[str, str | None]:
-    if spread_pct > 0.5:
+    max_spread_pct = config.MAX_SPREAD_PCT * 100
+    if spread_pct > max_spread_pct:
         return 'REJECTED', _format_spread_reason(spread_pct)
     if price_drift_pct > 1.0:
         return 'REJECTED', _format_drift_reason(price_drift_pct)
@@ -131,7 +134,8 @@ def _reject_result(
 
 
 def _format_spread_reason(spread_pct: float) -> str:
-    return f'Spread too wide ({_fmt(spread_pct)}% > 0.50%)'
+    max_spread_pct = config.MAX_SPREAD_PCT * 100
+    return f'Spread too wide ({_fmt(spread_pct)}% > {max_spread_pct:.2f}%)'
 
 
 def _format_drift_reason(price_drift_pct: float) -> str:

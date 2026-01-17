@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from trading_bot import config
 from trading_bot.symbols import t212_market_code
@@ -214,7 +214,13 @@ def _is_in_open_cooldown(market_code: str | None, checked_at: datetime) -> bool:
     if not mapping:
         return False
     zone_name, open_time = mapping
-    zone = ZoneInfo(zone_name)
+    try:
+        zone = ZoneInfo(zone_name)
+    except ZoneInfoNotFoundError:
+        logging.getLogger('trading_bot').warning(
+            'ZoneInfo missing for %s; skipping open cooldown.', zone_name
+        )
+        return False
     checked_at_utc = _ensure_utc(checked_at)
     local_time = checked_at_utc.astimezone(zone)
     open_dt = datetime.combine(local_time.date(), open_time, tzinfo=zone)

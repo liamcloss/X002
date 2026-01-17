@@ -107,6 +107,7 @@ The pre-trade check is a second-phase guardrail. It evaluates the latest `SetupC
 - **Quote source**: yfinance only (Trading212 is used for account and execution only).
 - **Spread check**: rejects quotes with missing bid/ask or spread over `MAX_SPREAD_PCT`.
 - **Rule check**: applies PreTradeGate logic for drift, stop distance, RR, and trade cap.
+- **Trade cap**: uses live open trades only; paper trades do not affect the pre-trade guard.
 - **Outputs**:
   - `outputs/pretrade_viability_<timestamp>.json` for full machine-readable results.
   - `outputs/spread_report_<timestamp>.json` with per-instrument spread stats for the last N days.
