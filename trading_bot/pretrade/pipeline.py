@@ -11,6 +11,7 @@ from urllib.parse import quote
 
 from src.market_data import yfinance_client
 from trading_bot.execution.open_trades import get_live_open_trade_count
+from trading_bot.mooner import load_mooner_states
 from trading_bot.run_state import finish_run, start_run
 from trading_bot.symbols import tradingview_symbol, yfinance_symbol
 from trading_bot.pretrade.notifier import build_pretrade_messages, send_pretrade_messages
@@ -40,6 +41,8 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
 
         setup_path = _find_latest_setup_file(base_dir, logger)
         setups = _load_setup_candidates(setup_path, logger)
+        mooner_states = load_mooner_states(base_dir, logger)
+        mooner_map = _build_mooner_map(mooner_states)
 
         try:
             open_trades_count = get_live_open_trade_count(logger=logger)
@@ -59,15 +62,21 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
             scan_rank = _extract_scan_rank(setup, index)
             parsed = _parse_setup_candidate(setup)
             if parsed is None:
+                reject = _reject_result(
+                    symbol=_extract_symbol(setup) or 'UNKNOWN',
+                    open_trades_count=open_trades_count,
+                    checked_at=checked_at,
+                    reason='Invalid setup data',
+                    scan_rank=scan_rank,
+                    display_ticker=_extract_display_ticker(setup),
+                    tradingview_url=_extract_tradingview_url(setup),
+                )
                 results.append(
-                    _reject_result(
+                    _attach_mooner_context(
+                        reject,
                         symbol=_extract_symbol(setup) or 'UNKNOWN',
-                        open_trades_count=open_trades_count,
-                        checked_at=checked_at,
-                        reason='Invalid setup data',
-                        scan_rank=scan_rank,
                         display_ticker=_extract_display_ticker(setup),
-                        tradingview_url=_extract_tradingview_url(setup),
+                        mooner_map=mooner_map,
                     )
                 )
                 continue
@@ -80,15 +89,21 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
             quote_symbol = _resolve_quote_symbol(symbol, display_ticker, logger)
             quote = yfinance_client.get_quote(quote_symbol)
             if quote is None:
+                reject = _reject_result(
+                    symbol=symbol,
+                    open_trades_count=open_trades_count,
+                    checked_at=checked_at,
+                    reason='No live price from yfinance',
+                    scan_rank=scan_rank,
+                    display_ticker=display_ticker,
+                    tradingview_url=tradingview_url,
+                )
                 results.append(
-                    _reject_result(
+                    _attach_mooner_context(
+                        reject,
                         symbol=symbol,
-                        open_trades_count=open_trades_count,
-                        checked_at=checked_at,
-                        reason='No live price from yfinance',
-                        scan_rank=scan_rank,
                         display_ticker=display_ticker,
-                        tradingview_url=tradingview_url,
+                        mooner_map=mooner_map,
                     )
                 )
                 continue
@@ -112,19 +127,25 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
                 spread_samples.append(sample)
             is_valid, invalid_reason = spread_gate.evaluate(quote)
             if not is_valid:
+                reject = _reject_result(
+                    symbol=symbol,
+                    bid=bid,
+                    ask=ask,
+                    last=last,
+                    spread=spread,
+                    open_trades_count=open_trades_count,
+                    checked_at=checked_at,
+                    reason=invalid_reason or 'Invalid quote data from yfinance',
+                    scan_rank=scan_rank,
+                    display_ticker=display_ticker,
+                    tradingview_url=tradingview_url,
+                )
                 results.append(
-                    _reject_result(
+                    _attach_mooner_context(
+                        reject,
                         symbol=symbol,
-                        bid=bid,
-                        ask=ask,
-                        last=last,
-                        spread=spread,
-                        open_trades_count=open_trades_count,
-                        checked_at=checked_at,
-                        reason=invalid_reason or 'Invalid quote data from yfinance',
-                        scan_rank=scan_rank,
                         display_ticker=display_ticker,
-                        tradingview_url=tradingview_url,
+                        mooner_map=mooner_map,
                     )
                 )
                 continue
@@ -147,7 +168,7 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
             result['scan_rank'] = scan_rank
             result['display_ticker'] = display_ticker
             result['tradingview_url'] = tradingview_url
-            results.append(result)
+            results.append(_attach_mooner_context(result, symbol, display_ticker, mooner_map))
 
         _assign_exec_ranks(results)
         _write_results(base_dir, results, now, logger)
@@ -236,6 +257,42 @@ def _parse_setup_candidate(payload: dict[str, Any]) -> tuple[str, float, float, 
         return None
 
     return symbol, planned_entry, planned_stop, planned_target
+
+
+def _build_mooner_map(states: list[dict]) -> dict[str, dict[str, Any]]:
+    mooner_map: dict[str, dict[str, Any]] = {}
+    for state in states:
+        ticker = _normalize_ticker(state.get('ticker'))
+        if not ticker:
+            continue
+        mooner_map[ticker] = {
+            'state': state.get('state'),
+            'context': state.get('context'),
+            'as_of': state.get('as_of'),
+        }
+    return mooner_map
+
+
+def _attach_mooner_context(
+    result: dict[str, Any],
+    symbol: str,
+    display_ticker: str | None,
+    mooner_map: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    if not mooner_map:
+        return result
+    ticker_key = _normalize_ticker(display_ticker) or _normalize_ticker(symbol)
+    if not ticker_key:
+        return result
+    mooner_state = mooner_map.get(ticker_key)
+    if not mooner_state:
+        return result
+    if mooner_state.get('state') == 'DORMANT':
+        return result
+    result['mooner_state'] = mooner_state.get('state')
+    result['mooner_context'] = mooner_state.get('context')
+    result['mooner_as_of'] = mooner_state.get('as_of')
+    return result
 
 
 def _extract_symbol(payload: dict[str, Any]) -> str | None:
@@ -408,6 +465,12 @@ def _to_int(value: object | None) -> int | None:
     except (TypeError, ValueError):
         return None
     return numeric
+
+
+def _normalize_ticker(value: object | None) -> str:
+    if value is None:
+        return ''
+    return str(value).strip().upper()
 
 
 __all__ = [

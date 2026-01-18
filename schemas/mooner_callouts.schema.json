@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Mooner Callouts",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "ticker": {
+        "type": "string",
+        "minLength": 1
+      },
+      "state": {
+        "type": "string",
+        "enum": ["FIRING"]
+      },
+      "detected_on": {
+        "type": "string",
+        "format": "date"
+      },
+      "context": {
+        "type": "string"
+      },
+      "severity": {
+        "type": "string"
+      }
+    },
+    "required": ["ticker", "state", "detected_on", "context", "severity"],
+    "additionalProperties": false
+  }
+}
