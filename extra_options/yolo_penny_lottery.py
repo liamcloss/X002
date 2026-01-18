@@ -46,7 +46,8 @@ def run_yolo_penny_lottery(base_dir: Path | None = None, logger: logging.Logger 
     week_of = _week_start(date.today())
     existing = _load_last_pick(root)
     if existing and existing.get("week_of") == week_of.isoformat():
-        logger.info("YOLO pick already logged for week %s (%s).", week_of, existing["ticker"])
+        logger.info("YOLO pick already logged for week %s (%s); refreshing timestamp.", week_of, existing["ticker"])
+        _write_pick(root, existing)
         return existing
 
     candidates = _gather_candidates(root, logger)
