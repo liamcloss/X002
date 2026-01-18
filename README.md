@@ -169,6 +169,3 @@ The universe refresh writes `universe/clean/universe.parquet` with an `active` c
 - **Ticker missing in yfinance**: Confirm the Trading212 symbol maps correctly to Yahoo via `trading_bot/symbols.py` and that `display_ticker` is present in `SetupCandidates.json`.
 - **Instrument missing from scans**: Check the `active` flag in `universe/clean/universe.parquet` and the auto-deactivation notes above.
 
----
-
-For additional details about pipelines or configuration, extend the setup instructions above to match your environment.
