@@ -320,7 +320,8 @@ def _build_scan_output(base_dir: Path, since: datetime | None) -> str | None:
         lines.append('No candidates found.')
         return '\n'.join(lines)
 
-    for index, candidate in enumerate(candidates, start=1):
+    display_limit = min(10, len(candidates))
+    for index, candidate in enumerate(candidates[:display_limit], start=1):
         symbol = str(
             candidate.get('display_ticker')
             or candidate.get('symbol')
@@ -342,6 +343,8 @@ def _build_scan_output(base_dir: Path, since: datetime | None) -> str | None:
         momentum = _format_ratio_percent(candidate.get('momentum_5d'))
         if reason or volume != 'n/a' or momentum != 'n/a':
             lines.append(f'   Reason: {reason}, volume {volume}x, momentum {momentum}')
+    if len(candidates) > display_limit:
+        lines.append(f'...showing {display_limit} of {len(candidates)} candidates')
     return '\n'.join(lines)
 
 
@@ -386,7 +389,8 @@ def _build_pretrade_output(base_dir: Path, since: datetime | None) -> str | None
         lines.append('No setups evaluated.')
         return '\n'.join(lines)
 
-    for result in results:
+    display_limit = min(15, len(results))
+    for result in results[:display_limit]:
         symbol = str(result.get('symbol') or '').strip()
         status = str(result.get('status') or 'REJECTED')
         lines.append(f'{symbol} -> {status}')
@@ -404,6 +408,8 @@ def _build_pretrade_output(base_dir: Path, since: datetime | None) -> str | None
             reason = _truncate_text(str(result.get('reject_reason') or 'Unknown reason'))
             lines.append(f'  Reason: {reason}')
         lines.append('')
+    if len(results) > display_limit:
+        lines.append(f'...showing {display_limit} of {len(results)} results')
     return '\n'.join(lines).strip()
 
 
@@ -609,9 +615,9 @@ async def _execute_command(
     )
     output = command_output_to_text(result)
     if job.command_name in PRODUCT_OUTPUT_COMMANDS:
-        product_output = _build_product_output(job.command_name, BASE_DIR)
+        product_output = _build_product_output(job.command_name, BASE_DIR, job.started_at)
         if product_output:
-            output = product_output
+            output = truncate_output(product_output)
         else:
             output = _format_missing_product_output(job.command_name, process.returncode or 0)
     if include_running_jobs:

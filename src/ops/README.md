@@ -47,7 +47,7 @@ The bot uses polling and will keep running until interrupted.
 ## Command execution
 
 Commands are executed via async subprocesses, so multiple commands can run concurrently. If a command overlaps a running command group (for example, a second `/scan`), the bot responds that the command is already running. The bot also checks for command lock files in `state/` so it won’t start a scan or universe refresh if another process is already running. Output is truncated to `MAX_OUTPUT_CHARS`.
-For `/scan` and `/pretrade`, the bot replies with the output artifacts (SetupCandidates or pretrade report) instead of stdout/log noise.
+For `/scan` and `/pretrade`, the bot replies with the output artifacts (SetupCandidates or pretrade report) instead of stdout/log noise. These replies are sent even if `OPS_NO_REPLY_COMMANDS` includes `scan` or `pretrade` (unless `OPS_OUTPUT_MODE=none`).
 
 If you use a virtual environment, set `OPS_PYTHON` to the correct interpreter (for example, `.venv\Scripts\python.exe` on Windows). The client defaults to the current interpreter.
 
