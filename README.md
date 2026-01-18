@@ -169,8 +169,15 @@ The sidecar runs before the nightly scan, keeps its JSON artifacts under the rep
     ├── pretrade/             # Pre-trade gate + spread sampling
     ├── signals/              # Signal generation + filters
     ├── universe/             # Universe refresh + normalization
+    ├── yolo_penny_lottery.py  # weekly penny-stock YOLO draw (standalone)
     └── ...
 ```
+
+## Penny Stock YOLO Lottery
+
+- Standalone weekly pencil: `trading_bot/yolo_penny_lottery.py` reads the universe, applies the fixed penny filters, ranks by the YOLO score, and writes the week’s draw to `YOLO_Pick.json` while appending to `YOLO_Ledger.json`.
+- It runs once per week (based on Monday) and always suggests a £2 stake; if the module is missing or fails, everything else keeps working exactly the same.
+- No interaction with the scanner, Mooner, or pretrade flows—its only outputs are the two JSON artifacts, so you can disable or remove it without affecting the rest of the system.
 
 ## Troubleshooting
 

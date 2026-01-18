@@ -17,13 +17,15 @@ from pathlib import Path
 from typing import Iterable, Set
 from urllib.parse import quote_plus
 
+BASE_DIR = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(BASE_DIR))
+
 from trading_bot.mooner import format_mooner_callout_lines
 
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 from dotenv import load_dotenv
 
-BASE_DIR = Path(__file__).resolve().parents[2]
 ENV_PATH = BASE_DIR / 'trading_bot' / '.env'
 load_dotenv(dotenv_path=ENV_PATH)
 PYTHON_EXECUTABLE = os.getenv('OPS_PYTHON') or sys.executable
@@ -48,6 +50,7 @@ COMMAND_MAP = {
     "status": [PYTHON_EXECUTABLE, "main.py", "status"],
     "market_data": [PYTHON_EXECUTABLE, "-m", "trading_bot.market_data.fetch_prices"],
     "mooner": [PYTHON_EXECUTABLE, "main.py", "mooner"],
+    "yolo": [PYTHON_EXECUTABLE, "trading_bot/yolo_penny_lottery.py"],
 }
 
 COMMAND_HELP = {
@@ -57,6 +60,7 @@ COMMAND_HELP = {
     "status": "Show system status.",
     "market_data": "Refresh the market data cache.",
     "mooner": "Run the Mooner sidecar regime watch.",
+    "yolo": "Run the penny stock YOLO lottery.",
     "help": "Show this help message.",
 }
 
@@ -64,7 +68,7 @@ LOG_PATH = BASE_DIR / 'logs' / 'telegram_command_client.log'
 MAX_OUTPUT_CHARS = 3500
 MAX_MESSAGE_LOG_CHARS = 200
 JOB_COUNTER = itertools.count(1)
-PRODUCT_OUTPUT_COMMANDS = {'scan', 'mooner'}
+PRODUCT_OUTPUT_COMMANDS = {'scan', 'mooner', 'yolo'}
 
 COMMAND_GROUPS = {
     "scan": {"scan", "ideas", "universe", "market_data"},
@@ -73,6 +77,7 @@ COMMAND_GROUPS = {
     "status": set(),
     "market_data": {"market_data", "scan", "universe"},
     "mooner": {"mooner", "scan", "market_data", "universe"},
+    "yolo": {"yolo"},
 }
 LOCK_GROUPS = {
     "scan": {"scan", "market_data", "universe"},
@@ -80,6 +85,7 @@ LOCK_GROUPS = {
     "universe": {"universe", "scan", "market_data"},
     "market_data": {"market_data", "scan", "universe"},
     "mooner": {"mooner", "scan", "market_data", "universe"},
+    "yolo": {"yolo"},
 }
 LOCK_DIR = BASE_DIR / 'state'
 SCHEDULE_ENV_MAP = {
@@ -88,6 +94,7 @@ SCHEDULE_ENV_MAP = {
     "scan": "OPS_SCHEDULE_SCAN",
     "pretrade": "OPS_SCHEDULE_PRETRADE",
     "mooner": "OPS_SCHEDULE_MOONER",
+    "yolo": "OPS_SCHEDULE_YOLO",
 }
 DAY_ALIASES = {
     "mon": 0,
