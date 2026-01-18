@@ -20,6 +20,7 @@ from trading_bot.universe.active import deactivate_universe_ticker, ensure_activ
 
 RETRY_STATE_FILE = "prices_retry_state.json"
 MARKET_STATE_FILE = "market_data_state.json"
+LOCK_FILE = "market_data.lock"
 SYMBOL_MAP_FILE = 'market_symbol_map.json'
 
 BATCH_SIZE = 20
@@ -67,15 +68,15 @@ def run() -> None:
 
     base_dir = Path(__file__).resolve().parents[2]
     logger = _ensure_logger(base_dir)
-    universe_path = base_dir / "universe" / "clean" / "universe.parquet"
-    if not universe_path.exists():
-        logger.error("Universe file missing: %s", universe_path)
-        return
+    run_started_at = datetime.now(timezone.utc)
+    run_start_monotonic = time.monotonic()
 
+    universe_path = base_dir / "universe" / "clean" / "universe.parquet"
     retry_state_path = base_dir / "state" / RETRY_STATE_FILE
     retry_state = _load_retry_state(retry_state_path)
     market_state_path = base_dir / "state" / MARKET_STATE_FILE
     market_state = _load_market_state(market_state_path)
+    lock_path = base_dir / "state" / LOCK_FILE
     symbol_map_path = base_dir / 'state' / SYMBOL_MAP_FILE
     symbol_map = _load_symbol_map(symbol_map_path)
     last_run_ts = market_state.get("last_run")
@@ -87,95 +88,154 @@ def run() -> None:
             f"{last_duration:.1f}" if isinstance(last_duration, (int, float)) else "unknown",
         )
 
-    tickers = _load_active_tickers(universe_path, logger)
-    if not tickers:
-        logger.warning("No active tickers found in universe.")
+    acquired = _record_run_start(market_state_path, lock_path, run_started_at, logger)
+    if not acquired:
+        logger.warning('Market data refresh already running; skipping this run.')
         return
 
-    random.shuffle(tickers)
-    prices_dir = cache.ensure_prices_dir(base_dir)
+    failed = False
+    completed = False
+    try:
+        if not universe_path.exists():
+            logger.error("Universe file missing: %s", universe_path)
+            return
 
-    total = len(tickers)
-    successes = 0
-    failures = 0
-    processed_total = 0
-    last_business_day = _last_business_day()
-    batches = list(_batches(tickers, BATCH_SIZE))
-    total_batches = len(batches)
-    batch_durations: list[float] = []
-    run_start = time.monotonic()
+        tickers = _load_active_tickers(universe_path, logger)
+        if not tickers:
+            logger.warning("No active tickers found in universe.")
+            return
 
-    logger.info(
-        "Refreshing market data for %s tickers across %s batches.", total, total_batches
-    )
+        random.shuffle(tickers)
+        prices_dir = cache.ensure_prices_dir(base_dir)
 
-    rate_limiter = AdaptiveRateLimiter(
-        base_delay_range=RATE_LIMIT_DELAY_RANGE,
-        burst_batches=BURST_BATCHES,
-        burst_cooldown_seconds=BURST_COOLDOWN_SECONDS,
-    )
+        total = len(tickers)
+        successes = 0
+        failures = 0
+        processed_total = 0
+        last_business_day = _last_business_day()
+        batches = list(_batches(tickers, BATCH_SIZE))
+        total_batches = len(batches)
+        batch_durations: list[float] = []
 
-    for batch_index, batch in enumerate(batches, start=1):
-        batch_start = time.monotonic()
-        processed_before_batch = processed_total
-        logger.info("Starting batch %s with %s tickers.", batch_index, len(batch))
-        current_time = datetime.now()
-        batch_payload = _prepare_batch(
-            batch,
-            prices_dir,
-            logger,
-            retry_state,
-            current_time,
-            last_business_day,
-            symbol_map,
+        logger.info(
+            "Refreshing market data for %s tickers across %s batches.", total, total_batches
         )
-        _save_symbol_map(symbol_map_path, symbol_map)
 
-        if not batch_payload:
-            logger.info("Batch %s: all tickers up to date or deferred.", batch_index)
-            processed_total += len(batch)
-            _finalize_batch(
-                batch_index,
-                total_batches,
-                batch_start,
-                batch_durations,
-                processed_total,
-                total,
-                successes,
-                failures,
-                processed_total - processed_before_batch,
-                rate_limiter,
-                batch_requested=False,
-                batch_failed=False,
-                logger=logger,
-            )
-            continue
+        rate_limiter = AdaptiveRateLimiter(
+            base_delay_range=RATE_LIMIT_DELAY_RANGE,
+            burst_batches=BURST_BATCHES,
+            burst_cooldown_seconds=BURST_COOLDOWN_SECONDS,
+        )
 
-        min_start = min(payload["start"] for payload in batch_payload.values())
-        end = last_business_day + pd.Timedelta(days=1)
-        try:
-            batch_data = yfinance_client.download_batch(
-                tickers=list(batch_payload.keys()),
-                start=min_start,
-                end=end.to_pydatetime(),
-                logger=logger,
+        for batch_index, batch in enumerate(batches, start=1):
+            batch_start = time.monotonic()
+            processed_before_batch = processed_total
+            logger.info("Starting batch %s with %s tickers.", batch_index, len(batch))
+            current_time = datetime.now()
+            batch_payload = _prepare_batch(
+                batch,
+                prices_dir,
+                logger,
+                retry_state,
+                current_time,
+                last_business_day,
+                symbol_map,
             )
-        except yfinance_client.YFinanceError as exc:
-            logger.error("Batch %s failed: %s", batch_index, exc)
-            failures += len(batch_payload)
-            processed_total += len(batch_payload)
-            now = datetime.now()
-            for alias, payload in batch_payload.items():
-                _record_failure(
-                    alias,
-                    payload["base_ticker"],
-                    retry_state,
-                    retry_state_path,
-                    logger,
-                    now,
-                    universe_path,
-                    ticker_failure=False,
+            _save_symbol_map(symbol_map_path, symbol_map)
+
+            if not batch_payload:
+                logger.info("Batch %s: all tickers up to date or deferred.", batch_index)
+                processed_total += len(batch)
+                _finalize_batch(
+                    batch_index,
+                    total_batches,
+                    batch_start,
+                    batch_durations,
+                    processed_total,
+                    total,
+                    successes,
+                    failures,
+                    processed_total - processed_before_batch,
+                    rate_limiter,
+                    batch_requested=False,
+                    batch_failed=False,
+                    logger=logger,
                 )
+                continue
+
+            min_start = min(payload["start"] for payload in batch_payload.values())
+            end = last_business_day + pd.Timedelta(days=1)
+            try:
+                batch_data = yfinance_client.download_batch(
+                    tickers=list(batch_payload.keys()),
+                    start=min_start,
+                    end=end.to_pydatetime(),
+                    logger=logger,
+                )
+            except yfinance_client.YFinanceError as exc:
+                logger.error("Batch %s failed: %s", batch_index, exc)
+                failures += len(batch_payload)
+                processed_total += len(batch_payload)
+                now = datetime.now()
+                for alias, payload in batch_payload.items():
+                    _record_failure(
+                        alias,
+                        payload["base_ticker"],
+                        retry_state,
+                        retry_state_path,
+                        logger,
+                        now,
+                        universe_path,
+                        ticker_failure=False,
+                    )
+                _finalize_batch(
+                    batch_index,
+                    total_batches,
+                    batch_start,
+                    batch_durations,
+                    processed_total,
+                    total,
+                    successes,
+                    failures,
+                    processed_total - processed_before_batch,
+                    rate_limiter,
+                    batch_requested=True,
+                    batch_failed=True,
+                    logger=logger,
+                )
+                continue
+
+            for alias, payload in batch_payload.items():
+                base_ticker = payload["base_ticker"]
+                try:
+                    ticker_data = yfinance_client.extract_ticker_data(batch_data, alias)
+                    cache.update_cache(
+                        prices_dir=prices_dir,
+                        ticker=base_ticker,
+                        new_data=ticker_data,
+                        logger=logger,
+                        existing=payload["existing"],
+                        last_date=payload["last_date"],
+                    )
+                    successes += 1
+                    processed_total += 1
+                    _record_success(alias, retry_state, retry_state_path)
+                except yfinance_client.TickerDownloadError as exc:
+                    logger.warning(
+                        "Skipping %s (%s) due to data error: %s", base_ticker, alias, exc
+                    )
+                    failures += 1
+                    processed_total += 1
+                    _record_failure(
+                        alias,
+                        base_ticker,
+                        retry_state,
+                        retry_state_path,
+                        logger,
+                        datetime.now(),
+                        universe_path,
+                        ticker_failure=True,
+                    )
             _finalize_batch(
                 batch_index,
                 total_batches,
@@ -188,74 +248,29 @@ def run() -> None:
                 processed_total - processed_before_batch,
                 rate_limiter,
                 batch_requested=True,
-                batch_failed=True,
+                batch_failed=False,
                 logger=logger,
             )
-            continue
 
-        for alias, payload in batch_payload.items():
-            base_ticker = payload["base_ticker"]
-            try:
-                ticker_data = yfinance_client.extract_ticker_data(batch_data, alias)
-                cache.update_cache(
-                    prices_dir=prices_dir,
-                    ticker=base_ticker,
-                    new_data=ticker_data,
-                    logger=logger,
-                    existing=payload["existing"],
-                    last_date=payload["last_date"],
-                )
-                successes += 1
-                processed_total += 1
-                _record_success(alias, retry_state, retry_state_path)
-            except yfinance_client.TickerDownloadError as exc:
-                logger.warning(
-                    "Skipping %s (%s) due to data error: %s", base_ticker, alias, exc
-                )
-                failures += 1
-                processed_total += 1
-                _record_failure(
-                    alias,
-                    base_ticker,
-                    retry_state,
-                    retry_state_path,
-                    logger,
-                    datetime.now(),
-                    universe_path,
-                    ticker_failure=True,
-                )
-        _finalize_batch(
-            batch_index,
-            total_batches,
-            batch_start,
-            batch_durations,
-            processed_total,
+        run_duration = time.monotonic() - run_start_monotonic
+        logger.info(
+            "Market data refresh complete. Total: %s, Success: %s, Failed: %s, Processed: %s",
             total,
             successes,
             failures,
-            processed_total - processed_before_batch,
-            rate_limiter,
-            batch_requested=True,
-            batch_failed=False,
-            logger=logger,
+            processed_total,
         )
-
-    run_duration = time.monotonic() - run_start
-    logger.info(
-        "Market data refresh complete. Total: %s, Success: %s, Failed: %s, Processed: %s",
-        total,
-        successes,
-        failures,
-        processed_total,
-    )
-    logger.info("Total refresh duration: %.1fs", run_duration)
-    _save_market_state(
-        market_state_path,
-        {
-            "last_run": datetime.now(timezone.utc).isoformat(),
-            "last_duration_seconds": round(run_duration, 1),
-        },
-    )
+        logger.info("Total refresh duration: %.1fs", run_duration)
+        completed = True
+    except Exception as exc:  # noqa: BLE001 - ensure status file reflects crash
+        failed = True
+        logger.exception("Market data refresh crashed: %s", exc)
+        raise
+    finally:
+        if acquired:
+            run_duration = time.monotonic() - run_start_monotonic
+            _record_run_finish(market_state_path, run_started_at, run_duration, failed, completed)
+            _clear_lock(lock_path, logger)
 
 
 def _ensure_logger(base_dir: Path) -> logging.Logger:
@@ -291,6 +306,65 @@ def _load_market_state(path: Path) -> dict[str, Any]:
 def _save_market_state(path: Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def _record_run_start(
+    state_path: Path,
+    lock_path: Path,
+    run_started_at: datetime,
+    logger: logging.Logger,
+) -> bool:
+    existing_lock = _read_lock(lock_path)
+    if existing_lock:
+        logger.warning("Market data lock already present (started %s).", existing_lock)
+        return False
+    _write_lock(lock_path, run_started_at)
+    state = _load_market_state(state_path)
+    state["status"] = "running"
+    state["run_started_at"] = run_started_at.isoformat()
+    _save_market_state(state_path, state)
+    return True
+
+
+def _record_run_finish(
+    state_path: Path,
+    run_started_at: datetime,
+    run_duration: float,
+    failed: bool,
+    completed: bool,
+) -> None:
+    state = _load_market_state(state_path)
+    state["status"] = "failed" if failed else "idle"
+    state["run_started_at"] = run_started_at.isoformat()
+    finished_at = datetime.now(timezone.utc).isoformat()
+    state["run_finished_at"] = finished_at
+    if not failed and completed:
+        state["last_run"] = finished_at
+        state["last_duration_seconds"] = round(run_duration, 1)
+    _save_market_state(state_path, state)
+
+
+def _read_lock(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    try:
+        return path.read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
+def _write_lock(path: Path, run_started_at: datetime) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(run_started_at.isoformat(), encoding="utf-8")
+
+
+def _clear_lock(path: Path, logger: logging.Logger) -> None:
+    if not path.exists():
+        return
+    try:
+        path.unlink()
+    except OSError as exc:
+        logger.warning("Failed to clear market data lock %s: %s", path, exc)
 
 
 def _load_symbol_map(path: Path) -> dict[str, str]:

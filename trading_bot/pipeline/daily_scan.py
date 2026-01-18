@@ -22,6 +22,7 @@ from trading_bot.paper.paper_engine import (
     process_open_trades,
 )
 from trading_bot.pretrade.setup_candidates import write_setup_candidates
+from trading_bot.run_state import finish_run, start_run
 from trading_bot.signals.filters import apply_filters
 from trading_bot.signals.pullback import detect_pullback
 from trading_bot.signals.rank import rank_candidates
@@ -61,9 +62,17 @@ def run_daily_scan(dry_run: bool = False) -> None:
     """
 
     logger = logging.getLogger("trading_bot")
+    base_dir = Path(__file__).resolve().parents[2]
+    run_handle = start_run(base_dir, 'scan', logger)
+    if not run_handle.acquired:
+        return
+    failed = False
+    completed = False
     try:
         _run_pipeline(dry_run=dry_run, logger=logger)
+        completed = True
     except Exception as exc:  # noqa: BLE001 - controlled error reporting
+        failed = True
         logger.exception("Daily scan failed: %s", exc)
         error_text = format_error_message(str(exc))
         if dry_run:
@@ -73,6 +82,8 @@ def run_daily_scan(dry_run: bool = False) -> None:
             telegram_client.send_error(error_text)
         except Exception as send_exc:  # noqa: BLE001 - log and continue
             logger.exception("Failed to send Telegram error message: %s", send_exc)
+    finally:
+        finish_run(run_handle, logger, failed=failed, completed=completed)
 
 
 def _run_pipeline(dry_run: bool, logger: logging.Logger) -> None:

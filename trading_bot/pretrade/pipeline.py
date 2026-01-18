@@ -10,6 +10,7 @@ from typing import Any
 
 from src.market_data import yfinance_client
 from trading_bot.execution.open_trades import get_live_open_trade_count
+from trading_bot.run_state import finish_run, start_run
 from trading_bot.symbols import yfinance_symbol
 from trading_bot.pretrade.notifier import build_pretrade_message, send_pretrade_message
 from trading_bot.pretrade.pretrade_gate import evaluate_pretrade
@@ -24,110 +25,132 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
 
     logger = logger or logging.getLogger('trading_bot')
     base_dir = base_dir or Path(__file__).resolve().parents[2]
-
-    setup_path = _find_latest_setup_file(base_dir, logger)
-    setups = _load_setup_candidates(setup_path, logger)
+    run_handle = start_run(base_dir, 'pretrade', logger)
+    if not run_handle.acquired:
+        return
+    failed = False
+    completed = False
 
     try:
-        open_trades_count = get_live_open_trade_count(logger=logger)
-    except Exception as exc:  # noqa: BLE001 - safe fallback for trade cap
-        logger.error('Failed to load live open trades count: %s', exc)
-        open_trades_count = 0
+        setup_path = _find_latest_setup_file(base_dir, logger)
+        setups = _load_setup_candidates(setup_path, logger)
 
-    now = datetime.now(timezone.utc)
-    checked_at = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+        try:
+            open_trades_count = get_live_open_trade_count(logger=logger)
+        except Exception as exc:  # noqa: BLE001 - safe fallback for trade cap
+            logger.error('Failed to load live open trades count: %s', exc)
+            open_trades_count = 0
 
-    logger.info('MarketDataSource = "yfinance"')
-    spread_gate = SpreadGate(logger=logger)
+        now = datetime.now(timezone.utc)
+        checked_at = now.strftime('%Y-%m-%dT%H:%M:%SZ')
 
-    results: list[dict[str, Any]] = []
-    spread_samples: list[dict[str, Any]] = []
-    for setup in setups:
-        parsed = _parse_setup_candidate(setup)
-        if parsed is None:
-            results.append(
-                _reject_result(
-                    symbol=_extract_symbol(setup) or 'UNKNOWN',
-                    open_trades_count=open_trades_count,
-                    checked_at=checked_at,
-                    reason='Invalid setup data',
+        logger.info('MarketDataSource = "yfinance"')
+        spread_gate = SpreadGate(logger=logger)
+
+        results: list[dict[str, Any]] = []
+        plans_by_symbol: dict[str, dict[str, float]] = {}
+        spread_samples: list[dict[str, Any]] = []
+        for setup in setups:
+            parsed = _parse_setup_candidate(setup)
+            if parsed is None:
+                results.append(
+                    _reject_result(
+                        symbol=_extract_symbol(setup) or 'UNKNOWN',
+                        open_trades_count=open_trades_count,
+                        checked_at=checked_at,
+                        reason='Invalid setup data',
+                    )
                 )
-            )
-            continue
-        symbol, planned_entry, planned_stop, planned_target = parsed
+                continue
+            symbol, planned_entry, planned_stop, planned_target = parsed
+            plans_by_symbol[symbol] = {
+                'planned_entry': planned_entry,
+                'planned_stop': planned_stop,
+                'planned_target': planned_target,
+            }
 
-        display_ticker = _extract_display_ticker(setup)
-        quote_symbol = _resolve_quote_symbol(symbol, display_ticker, logger)
-        quote = yfinance_client.get_quote(quote_symbol)
-        if quote is None:
-            results.append(
-                _reject_result(
-                    symbol=symbol,
-                    open_trades_count=open_trades_count,
-                    checked_at=checked_at,
-                    reason='No live price from yfinance',
+            display_ticker = _extract_display_ticker(setup)
+            quote_symbol = _resolve_quote_symbol(symbol, display_ticker, logger)
+            quote = yfinance_client.get_quote(quote_symbol)
+            if quote is None:
+                results.append(
+                    _reject_result(
+                        symbol=symbol,
+                        open_trades_count=open_trades_count,
+                        checked_at=checked_at,
+                        reason='No live price from yfinance',
+                    )
                 )
+                continue
+
+            if quote_symbol != symbol:
+                quote = {**quote, 'symbol': symbol}
+
+            bid = quote.get('bid')
+            ask = quote.get('ask')
+            last = quote.get('last')
+            spread = quote.get('spread')
+            sample = collect_spread_sample(
+                symbol=symbol,
+                spread=spread,
+                last=last,
+                quote_timestamp=quote.get('timestamp') if isinstance(quote, dict) else None,
+                checked_at=now,
+                logger=logger,
             )
-            continue
-
-        if quote_symbol != symbol:
-            quote = {**quote, 'symbol': symbol}
-
-        bid = quote.get('bid')
-        ask = quote.get('ask')
-        last = quote.get('last')
-        spread = quote.get('spread')
-        sample = collect_spread_sample(
-            symbol=symbol,
-            spread=spread,
-            last=last,
-            quote_timestamp=quote.get('timestamp') if isinstance(quote, dict) else None,
-            checked_at=now,
-            logger=logger,
-        )
-        if sample:
-            spread_samples.append(sample)
-        is_valid, invalid_reason = spread_gate.evaluate(quote)
-        if not is_valid:
-            results.append(
-                _reject_result(
-                    symbol=symbol,
-                    bid=bid,
-                    ask=ask,
-                    last=last,
-                    spread=spread,
-                    open_trades_count=open_trades_count,
-                    checked_at=checked_at,
-                    reason=invalid_reason or 'Invalid quote data from yfinance',
+            if sample:
+                spread_samples.append(sample)
+            is_valid, invalid_reason = spread_gate.evaluate(quote)
+            if not is_valid:
+                results.append(
+                    _reject_result(
+                        symbol=symbol,
+                        bid=bid,
+                        ask=ask,
+                        last=last,
+                        spread=spread,
+                        open_trades_count=open_trades_count,
+                        checked_at=checked_at,
+                        reason=invalid_reason or 'Invalid quote data from yfinance',
+                    )
                 )
+                continue
+
+            result = evaluate_pretrade(
+                symbol=symbol,
+                planned_entry=planned_entry,
+                planned_stop=planned_stop,
+                planned_target=planned_target,
+                live_bid=float(bid),
+                live_ask=float(ask),
+                open_trades_count=open_trades_count,
+                checked_at=checked_at,
             )
-            continue
+            result['last'] = last
+            result['spread'] = spread
+            result['planned_entry'] = planned_entry
+            result['planned_stop'] = planned_stop
+            result['planned_target'] = planned_target
+            results.append(result)
 
-        result = evaluate_pretrade(
-            symbol=symbol,
-            planned_entry=planned_entry,
-            planned_stop=planned_stop,
-            planned_target=planned_target,
-            live_bid=float(bid),
-            live_ask=float(ask),
-            open_trades_count=open_trades_count,
-            checked_at=checked_at,
-        )
-        result['last'] = last
-        result['spread'] = spread
-        results.append(result)
+        _write_results(base_dir, results, now, logger)
+        try:
+            report_path = write_spread_report(base_dir, spread_samples, now, logger)
+            if report_path:
+                logger.info('Spread report written: %s', report_path)
+        except Exception as exc:  # noqa: BLE001 - spread reporting must not break pretrade
+            logger.error('Failed to write spread report: %s', exc)
 
-    _write_results(base_dir, results, now, logger)
-    try:
-        report_path = write_spread_report(base_dir, spread_samples, now, logger)
-        if report_path:
-            logger.info('Spread report written: %s', report_path)
-    except Exception as exc:  # noqa: BLE001 - spread reporting must not break pretrade
-        logger.error('Failed to write spread report: %s', exc)
-
-    _print_results_table(results)
-    message = build_pretrade_message(results, checked_at)
-    send_pretrade_message(message, logger)
+        _print_results_table(results, plans_by_symbol)
+        message = build_pretrade_message(results, checked_at)
+        send_pretrade_message(message, logger)
+        completed = True
+    except Exception as exc:  # noqa: BLE001 - ensure run state is updated
+        failed = True
+        logger.exception('Pre-trade viability check failed: %s', exc)
+        raise
+    finally:
+        finish_run(run_handle, logger, failed=failed, completed=completed)
 
 
 def _find_latest_setup_file(base_dir: Path, logger: logging.Logger) -> Path | None:
@@ -304,7 +327,10 @@ def _write_results(
         logger.error('Failed to write pretrade results to %s: %s', path, exc)
 
 
-def _print_results_table(results: list[dict[str, Any]]) -> None:
+def _print_results_table(
+    results: list[dict[str, Any]],
+    plans_by_symbol: dict[str, dict[str, float]],
+) -> None:
     header = 'symbol | last | spread% | status'
     separator = '--- | --- | --- | ---'
     lines = [header, separator]
@@ -316,7 +342,19 @@ def _print_results_table(results: list[dict[str, Any]]) -> None:
         last_text = f'{last:.2f}' if isinstance(last, (int, float)) else 'n/a'
         spread_text = f'{spread * 100:.2f}%' if isinstance(spread, (int, float)) else 'n/a'
         lines.append(f'{symbol} | {last_text} | {spread_text} | {status}')
+        if status == 'EXECUTABLE':
+            plan = plans_by_symbol.get(symbol, {})
+            entry = _format_plan_value(plan.get('planned_entry'))
+            stop = _format_plan_value(plan.get('planned_stop'))
+            target = _format_plan_value(plan.get('planned_target'))
+            lines.append(f'  Entry: {entry} | Stop: {stop} | Target: {target}')
     print('\n'.join(lines))
+
+
+def _format_plan_value(value: float | None) -> str:
+    if value is None:
+        return 'n/a'
+    return f'{value:.2f}'
 
 
 __all__ = [
