@@ -49,6 +49,7 @@ Configuration is split between code constants and environment variables.
 - **Mode**: update `MODE` in `trading_bot/config.py` to `TEST` or `LIVE`.
 - **Storage**: the CLI will auto-create these folders in the repo root if they don't exist: `data/`, `logs/`, `outputs/`, `state/`, `universe/`.
 - **Pre-trade settings**: adjust `MAX_SPREAD_PCT`, `PRETRADE_CANDIDATE_LIMIT`, `SPREAD_SAMPLE_LOOKBACK_DAYS`, and `SPREAD_SAMPLE_OPEN_COOLDOWN_MINUTES` in `trading_bot/config.py` to tune risk gates and reporting.
+- **Mooner settings**: adjust `MOONER_SUBSET_MAX`, `MOONER_CANDIDATE_VOLUME_THRESHOLD`, `MOONER_CANDIDATE_DOLLAR_VOLUME_GBP`, `MOONER_RESISTANCE_BUFFER`, and the ATR/drawdown thresholds in `trading_bot/config.py` to tweak how regimes are discovered and filtered.
 
 If you run into errors about missing variables or misconfigured mode, double-check the `.env` file and `MODE` value.
 
@@ -89,6 +90,7 @@ python main.py scan --dry-run
 python main.py scan
 python main.py universe
 python main.py pretrade
+python main.py mooner
 python main.py replay --days 90
 python main.py replay --start-date 2023-01-01 --days 60
 ```
@@ -98,6 +100,7 @@ python main.py replay --start-date 2023-01-01 --days 60
 - `scan`: Runs the daily market scan. Use `--dry-run` to avoid messaging/state writes.
 - `universe`: Refreshes the Trading212 instrument universe.
 - `pretrade`: Evaluates yesterday's setup candidates against live quote rules, prints a console table, writes JSON outputs, and sends one consolidated Telegram summary.
+- `mooner`: Executes the Mooner regime sidecar and records any `FIRING` callouts for follow-up.
 - `replay`: Replays historical data for backtesting. Supports `--days` and `--start-date`.
 
 ## Pre-trade viability
@@ -129,6 +132,16 @@ The universe refresh writes `universe/clean/universe.parquet` with an `active` c
 - **Inference**: `active` defaults to `max_open_quantity > 0` when missing.
 - **Auto-deactivation**: repeated yfinance data failures can mark a ticker inactive in the universe file.
 - **Reactivation**: update `active` back to `True` in the parquet or re-run the universe refresh.
+
+## Mooner autonomous pipeline
+
+- **MoonerCandidatePool.json**: broad discovery via liquidity, volume surges, ATR compression, and volatility percentile filters across the last 60 trading days for every active symbol.
+- **MoonerUniverse.json**: universe-worthy names remain after enforcing price floors, positive 200-day slopes, capped drawdowns, and no nearby resistance.
+- **MoonerSubset.json**: the top 10 universe instruments ranked by ATR compression, relative strength, and structural cleanliness; no manual overrides are allowed.
+- **MoonerState.json**: each subset ticker is classified into `DORMANT`, `WARMING`, `ARMED`, or `FIRING` using explicit ATR, range, MA, and volume rules.
+- **MoonerCallouts.json**: informational alerts are emitted only when a subset ticker newly transitions into `FIRING`; nothing is traded or sized.
+
+The sidecar runs before the nightly scan, keeps its JSON artifacts under the repo root, and logs its observations so you can audit each stage independently.
 
 ## Outputs and reports
 

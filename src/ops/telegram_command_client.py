@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Iterable, Set
 from urllib.parse import quote_plus
 
+from trading_bot.mooner import format_mooner_callout_lines
+
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 from dotenv import load_dotenv
@@ -45,6 +47,7 @@ COMMAND_MAP = {
     "pretrade": [PYTHON_EXECUTABLE, "main.py", "pretrade"],
     "status": [PYTHON_EXECUTABLE, "main.py", "status"],
     "market_data": [PYTHON_EXECUTABLE, "-m", "trading_bot.market_data.fetch_prices"],
+    "mooner": [PYTHON_EXECUTABLE, "main.py", "mooner"],
 }
 
 COMMAND_HELP = {
@@ -53,6 +56,7 @@ COMMAND_HELP = {
     "pretrade": "Run pretrade checks.",
     "status": "Show system status.",
     "market_data": "Refresh the market data cache.",
+    "mooner": "Run the Mooner sidecar regime watch.",
     "help": "Show this help message.",
 }
 
@@ -60,7 +64,7 @@ LOG_PATH = BASE_DIR / 'logs' / 'telegram_command_client.log'
 MAX_OUTPUT_CHARS = 3500
 MAX_MESSAGE_LOG_CHARS = 200
 JOB_COUNTER = itertools.count(1)
-PRODUCT_OUTPUT_COMMANDS = {'scan'}
+PRODUCT_OUTPUT_COMMANDS = {'scan', 'mooner'}
 
 COMMAND_GROUPS = {
     "scan": {"scan", "ideas", "universe", "market_data"},
@@ -68,12 +72,14 @@ COMMAND_GROUPS = {
     "pretrade": {"ideas"},
     "status": set(),
     "market_data": {"market_data", "scan", "universe"},
+    "mooner": {"mooner", "scan", "market_data", "universe"},
 }
 LOCK_GROUPS = {
     "scan": {"scan", "market_data", "universe"},
     "ideas": {"pretrade", "scan"},
     "universe": {"universe", "scan", "market_data"},
     "market_data": {"market_data", "scan", "universe"},
+    "mooner": {"mooner", "scan", "market_data", "universe"},
 }
 LOCK_DIR = BASE_DIR / 'state'
 SCHEDULE_ENV_MAP = {
@@ -81,6 +87,7 @@ SCHEDULE_ENV_MAP = {
     "market_data": "OPS_SCHEDULE_MARKET_DATA",
     "scan": "OPS_SCHEDULE_SCAN",
     "pretrade": "OPS_SCHEDULE_PRETRADE",
+    "mooner": "OPS_SCHEDULE_MOONER",
 }
 DAY_ALIASES = {
     "mon": 0,
@@ -543,6 +550,35 @@ def _build_pretrade_output(base_dir: Path, since: datetime | None) -> str | None
     return '\n'.join(lines).strip()
 
 
+def _build_mooner_output(base_dir: Path, since: datetime | None) -> str | None:
+    path = base_dir / 'MoonerCallouts.json'
+    if not path.exists():
+        return None
+    modified_at = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    if since and modified_at < since:
+        return None
+
+    payload = _load_json(path)
+    if not isinstance(payload, list):
+        return None
+
+    callouts = [item for item in payload if isinstance(item, dict)]
+    lines = [
+        'MOONER CALL-OUTS',
+        f'Updated: {_format_timestamp(modified_at)}',
+        f'Callouts: {len(callouts)}',
+        '',
+    ]
+    if not callouts:
+        lines.append('No callouts recorded.')
+        return '\n'.join(lines)
+
+    lines.append('Callouts:')
+    for line in format_mooner_callout_lines(callouts):
+        lines.append(f'- {line}')
+    return '\n'.join(lines).strip()
+
+
 def _build_product_output(
     command_name: str,
     base_dir: Path,
@@ -552,6 +588,8 @@ def _build_product_output(
         return _build_scan_output(base_dir, since)
     if command_name == 'pretrade':
         return _build_pretrade_output(base_dir, since)
+    if command_name == 'mooner':
+        return _build_mooner_output(base_dir, since)
     return None
 
 

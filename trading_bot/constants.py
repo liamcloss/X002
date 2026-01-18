@@ -16,6 +16,7 @@ class RunType(str, Enum):
     REPLAY = "REPLAY"
     PRETRADE = "PRETRADE"
     STATUS = "STATUS"
+    MOONER = "MOONER"
 
 
 class AlertState(str, Enum):

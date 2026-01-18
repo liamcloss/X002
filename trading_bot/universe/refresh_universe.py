@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 import requests
-
 from trading_bot.universe.normalise_universe import normalise_universe
 from trading_bot.universe.t212_client import Trading212Client
 from trading_bot.run_state import finish_run, start_run

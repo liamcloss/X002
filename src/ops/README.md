@@ -36,6 +36,7 @@ OPS_SCHEDULE_UNIVERSE=sun 20:00
 OPS_SCHEDULE_MARKET_DATA=daily 00:05
 OPS_SCHEDULE_SCAN=daily 06:30
 OPS_SCHEDULE_PRETRADE=weekday 08:00
+OPS_SCHEDULE_MOONER=daily 22:00
 OPS_SCHEDULE_NOTIFY_SKIPS=1             # optional: notify if a scheduled job is blocked
 OPS_SCHEDULE_SEND_START=0               # optional: send a "started" message
 ```
@@ -69,6 +70,7 @@ The bot uses polling and will keep running until interrupted.
 Commands are executed via async subprocesses, so multiple commands can run concurrently. If a command overlaps a running command group (for example, a second `/scan`), the bot responds that the command is already running. The bot also checks for command lock files in `state/` so it won’t start a scan or universe refresh if another process is already running. Output is truncated to `MAX_OUTPUT_CHARS`.
 For `/scan`, the bot replies with the output artifacts (SetupCandidates) instead of stdout/log noise. These replies are sent even if `OPS_NO_REPLY_COMMANDS` includes `scan` (unless `OPS_OUTPUT_MODE=none`).
 For `/pretrade`, the CLI sends per-setup Telegram messages directly to the chat that invoked the command; the ops bot does not send a summary reply on success.
+For `/mooner`, the bot returns a concise summary of the latest Mooner sidecar callouts (stored in `MoonerCallouts.json`) so you can see any `FIRING` regimes without digging through logs. Each run also writes `MoonerCandidatePool.json`, `MoonerUniverse.json`, `MoonerSubset.json`, and `MoonerState.json` so you can audit every stage of the autonomous pipeline.
 Scheduled jobs use the same conflict and lock checks; if a conflict is detected, the job is skipped (optionally notified via `OPS_SCHEDULE_NOTIFY_SKIPS`).
 To keep scheduled `market_data` or `universe` quiet, add them to `OPS_SILENT_COMMANDS` or `OPS_NO_REPLY_COMMANDS`.
 
@@ -90,6 +92,7 @@ python main.py universe
 python -m trading_bot.market_data.fetch_prices
 python main.py scan
 python main.py pretrade
+python main.py mooner
 python main.py status
 ```
 

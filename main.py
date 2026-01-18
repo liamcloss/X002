@@ -13,6 +13,7 @@ from trading_bot.backtest.replay import run_replay
 from trading_bot.pipeline.daily_scan import run_daily_scan
 from trading_bot.universe.refresh_universe import run_universe_refresh
 from trading_bot.pretrade.pipeline import run_pretrade
+from trading_bot.mooner import format_mooner_callout_lines, run_mooner_sidecar
 from trading_bot.status import run_status
 
 REQUIRED_DIRS = (
@@ -48,6 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("universe", help="Refresh trading universe")
     subparsers.add_parser("pretrade", help="Run pre-trade viability check")
     subparsers.add_parser("status", help="Show system status")
+    subparsers.add_parser("mooner", help="Run the Mooner regime sidecar")
 
     replay_parser = subparsers.add_parser("replay", help="Run replay mode")
     replay_parser.add_argument("--days", type=int, default=90, help="Days to replay")
@@ -83,6 +85,28 @@ def _handle_pretrade(logger) -> None:
     run_pretrade()
 
 
+def _handle_mooner(logger, base_dir: Path) -> None:
+    logger.info('Mooner sidecar starting')
+    try:
+        callouts = run_mooner_sidecar(base_dir, logger)
+    except Exception as exc:
+        logger.exception('Mooner sidecar failed: %s', exc)
+        print(f"Mooner sidecar failed: {exc}")
+        return
+    logger.info('Mooner sidecar completed with %s callouts', len(callouts))
+    _print_mooner_callouts(callouts)
+
+
+def _print_mooner_callouts(callouts: list[dict]) -> None:
+    lines = format_mooner_callout_lines(callouts)
+    if not lines:
+        print('Mooner sidecar completed: no active regimes detected.')
+        return
+    print(f'Mooner sidecar emitted {len(lines)} callout(s):')
+    for line in lines:
+        print(f'- {line}')
+
+
 def _handle_status(logger) -> None:
     logger.info('Status report requested')
     run_status(Path(__file__).resolve().parent, logger=logger)
@@ -107,6 +131,8 @@ def main() -> int:
         _handle_replay(logger, days=args.days, start_date=args.start_date)
     elif args.command == RunType.PRETRADE.value.lower():
         _handle_pretrade(logger)
+    elif args.command == RunType.MOONER.value.lower():
+        _handle_mooner(logger, base_dir)
     elif args.command == RunType.STATUS.value.lower():
         _handle_status(logger)
     else:

@@ -1,59 +1,35 @@
-"""Mooner sidecar pipeline orchestration."""
+"""Mooner sidecar orchestration pipeline."""
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from trading_bot.mooner.mooner_callout_emitter import emit_mooner_callouts, load_mooner_callouts
-from trading_bot.mooner.mooner_state_engine import (
-    evaluate_mooner_states,
-    load_mooner_states,
-    write_mooner_states,
-)
-from trading_bot.mooner.mooner_subset_selector import (
-    load_mooner_subset,
-    select_mooner_subset,
-    write_mooner_subset,
-)
+
+from trading_bot.mooner.mooner_candidate_pool import build_candidate_pool
+from trading_bot.mooner.mooner_universe_builder import build_mooner_universe
+from trading_bot.mooner.mooner_subset_ranker import rank_mooner_subset
+from trading_bot.mooner.mooner_state_engine import evaluate_mooner_states
+from trading_bot.mooner.mooner_callout_emitter import emit_mooner_callouts
 
 
 def run_mooner_sidecar(base_dir: Path, logger: logging.Logger) -> list[dict]:
-    """Run the mooner subset selection, state engine, and callout emission."""
+    """Execute the Mooner sidecar pipeline and return any generated callouts."""
 
-    tickers = load_mooner_subset(base_dir, logger)
-    if not tickers:
-        tickers = select_mooner_subset(base_dir, logger)
-        write_mooner_subset(base_dir, tickers, logger)
-
-    if not tickers:
+    candidate_pool = build_candidate_pool(base_dir, logger)
+    universe = build_mooner_universe(base_dir, candidate_pool, logger)
+    subset = rank_mooner_subset(base_dir, universe, logger)
+    if not subset:
+        logger.info("Mooner subset empty; skipping state evaluation.")
         return []
 
-    prices_dir = base_dir / "data" / "prices"
-    if not prices_dir.exists():
-        logger.warning("Market data cache missing; mooner sidecar skipped.")
+    snapshots, _ = evaluate_mooner_states(base_dir, subset, logger)
+    if not snapshots:
         return []
 
-    snapshots = evaluate_mooner_states(prices_dir, tickers, logger)
-    write_mooner_states(base_dir, snapshots)
-    snapshot_payloads = [
-        {
-            "ticker": snapshot.ticker,
-            "state": snapshot.state.value,
-            "as_of": snapshot.as_of,
-            "context": snapshot.context,
-            "metrics": snapshot.metrics,
-        }
-        for snapshot in snapshots
-    ]
-    return emit_mooner_callouts(
-        base_dir,
-        snapshots=snapshot_payloads,
-        logger=logger,
-    )
+    callouts = emit_mooner_callouts(base_dir, snapshots, logger)
+    return callouts
 
 
 __all__ = [
-    'load_mooner_callouts',
-    'load_mooner_states',
-    'run_mooner_sidecar',
+    "run_mooner_sidecar",
 ]
