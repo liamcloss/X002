@@ -5,6 +5,7 @@ automated trading agent.
 """
 
 import asyncio
+import html
 import itertools
 import json
 import logging
@@ -14,13 +15,14 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import Iterable, Set
-from urllib.parse import quote_plus
+from typing import Any, Iterable, Set
+from urllib.parse import quote, quote_plus
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(BASE_DIR))
 
 from trading_bot.mooner import format_mooner_callout_lines
+from trading_bot.symbols import tradingview_symbol
 
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
@@ -50,7 +52,7 @@ COMMAND_MAP = {
     "status": [PYTHON_EXECUTABLE, "main.py", "status"],
     "market_data": [PYTHON_EXECUTABLE, "-m", "trading_bot.market_data.fetch_prices"],
     "mooner": [PYTHON_EXECUTABLE, "main.py", "mooner"],
-    "yolo": [PYTHON_EXECUTABLE, "trading_bot/yolo_penny_lottery.py"],
+    "yolo": [PYTHON_EXECUTABLE, "extra_options/yolo_penny_lottery.py"],
 }
 
 COMMAND_HELP = {
@@ -96,6 +98,7 @@ SCHEDULE_ENV_MAP = {
     "mooner": "OPS_SCHEDULE_MOONER",
     "yolo": "OPS_SCHEDULE_YOLO",
 }
+SCHEDULE_CATCHUP_WINDOW = timedelta(hours=24)
 DAY_ALIASES = {
     "mon": 0,
     "monday": 0,
@@ -154,6 +157,12 @@ class ScheduleSpec:
     second: int
     source: str
     next_run: datetime | None = None
+
+
+@dataclass
+class ScheduleCatchup:
+    spec: ScheduleSpec
+    expected_at: datetime
 
 
 def setup_logging() -> logging.Logger:
@@ -333,17 +342,110 @@ def _truncate_text(text: str | None, limit: int = 160) -> str:
 
 
 def _news_search_url(candidate: dict) -> str | None:
-    query_value = (
-        candidate.get('display_ticker')
-        or candidate.get('raw_ticker')
-        or candidate.get('ticker')
-        or candidate.get('symbol')
-        or ''
-    )
-    query = str(query_value).strip()
+    query = _search_query_from_candidate(candidate)
+    return _news_search_url_from_query(query)
+
+
+def _search_query_from_candidate(candidate: dict) -> str | None:
+    for key in ('display_ticker', 'raw_ticker', 'ticker', 'symbol'):
+        value = candidate.get(key)
+        if value:
+            text = str(value).strip()
+            if text:
+                return text
+    return None
+
+
+def _news_search_url_from_query(query: str | None) -> str | None:
     if not query:
         return None
     return f'https://news.google.com/search?q={quote_plus(f"{query} stock")}'
+
+
+def _news_search_url_for_ticker(ticker: str | None) -> str | None:
+    query = _search_query_from_ticker(ticker)
+    return _news_search_url_from_query(query)
+
+
+def _reddit_search_url(query: str | None) -> str | None:
+    if not query:
+        return None
+    return f'https://www.reddit.com/search/?q={quote_plus(query)}&sort=top&t=all'
+
+
+def _x_search_url(query: str | None) -> str | None:
+    if not query:
+        return None
+    return f'https://x.com/search?q={quote_plus(query)}'
+
+
+def _threads_search_url(query: str | None) -> str | None:
+    if not query:
+        return None
+    return f'https://www.threads.net/search?q={quote_plus(query)}'
+
+
+def _search_query_from_ticker(ticker: str | None) -> str | None:
+    if not ticker:
+        return None
+    text = str(ticker).strip()
+    if not text:
+        return None
+    symbol = text.split('_')[0]
+    if not symbol:
+        return None
+    return symbol
+
+
+def _tradingview_url_from_ticker(ticker: str | None) -> str | None:
+    if not ticker:
+        return None
+    tv_symbol = tradingview_symbol(ticker)
+    if not tv_symbol:
+        return None
+    safe_symbol = quote(tv_symbol.replace(' ', ''))
+    if ':' in tv_symbol:
+        return f'https://www.tradingview.com/chart/?symbol={safe_symbol}'
+    return f'https://www.tradingview.com/symbols/{safe_symbol}/'
+
+
+def _html_escape(value: object | None) -> str:
+    if value is None:
+        return ''
+    return html.escape(str(value))
+
+
+def _link_html(url: str | None, label: str = 'LINK') -> str:
+    if not url:
+        return _html_escape(label)
+    safe_url = html.escape(url, quote=True)
+    safe_label = html.escape(label)
+    return f'<a href="{safe_url}">{safe_label}</a>'
+
+
+def _build_yolo_link_line(ticker: str | None) -> str | None:
+    query = _search_query_from_ticker(ticker)
+    if not query:
+        return None
+    links: list[str] = []
+    tv_url = _tradingview_url_from_ticker(ticker)
+    if tv_url:
+        links.append(f'{_html_escape("📈 ")}{_link_html(tv_url)}')
+    news_url = _news_search_url_for_ticker(ticker)
+    if news_url:
+        links.append(f'{_html_escape("📰 ")}{_link_html(news_url)}')
+    reddit_url = _reddit_search_url(query)
+    if reddit_url:
+        links.append(f'{_html_escape("🧠 ")}{_link_html(reddit_url)}')
+    x_url = _x_search_url(query)
+    if x_url:
+        links.append(f'{_html_escape("🐦 ")}{_link_html(x_url)}')
+    threads_url = _threads_search_url(query)
+    if threads_url:
+        links.append(f'{_html_escape("🧵 ")}{_link_html(threads_url)}')
+    if not links:
+        return None
+    return ' | '.join(links)
 
 
 def _load_json(path: Path) -> dict | list | None:
@@ -387,9 +489,9 @@ def _build_scan_output(base_dir: Path, since: datetime | None) -> str | None:
     mode = str(meta.get('mode', 'unknown')).upper() if meta else 'UNKNOWN'
     lines = [
         'SCAN OUTPUT',
-        f'Generated at: {generated_at}',
-        f'Data as of: {data_as_of}',
-        f'Mode: {mode}',
+        f'Generated at: {_html_escape(generated_at)}',
+        f'Data as of: {_html_escape(data_as_of)}',
+        f'Mode: {_html_escape(mode)}',
         f'Candidates: {len(candidates)}',
         '',
     ]
@@ -413,21 +515,36 @@ def _build_scan_output(base_dir: Path, since: datetime | None) -> str | None:
         currency_symbol = str(candidate.get('currency_symbol') or '').strip()
         currency_code = str(candidate.get('currency_code') or '').strip().upper()
         entry_text = entry if entry == 'n/a' else f'{currency_symbol}{entry}'.strip()
-        lines.append(f'{rank}. {symbol}')
-        lines.append(
-            f'   Entry: {entry_text} {currency_code} | Stop: {stop} | Target: {target} | RR: {rr}'
+
+        lines.append(f'{_html_escape(str(rank))}. {_html_escape(symbol)}')
+        entry_line = f'   Entry: {_html_escape(entry_text)}'
+        if currency_code:
+            entry_line = f'{entry_line} {_html_escape(currency_code)}'
+        entry_line = (
+            f'{entry_line} | Stop: {_html_escape(stop)}'
+            f' | Target: {_html_escape(target)} | RR: {_html_escape(rr)}'
         )
+        lines.append(entry_line)
+
         reason = _truncate_text(str(candidate.get('reason') or '').strip())
         volume = _format_numeric(candidate.get('volume_multiple'))
         momentum = _format_ratio_percent(candidate.get('momentum_5d'))
-        if reason or volume != 'n/a' or momentum != 'n/a':
-            lines.append(f'   Setup: {reason} | Vol: {volume}x | Momentum: {momentum}')
+        setup_parts = []
+        if reason:
+            setup_parts.append(reason)
+        if volume != 'n/a':
+            setup_parts.append(f'Vol: {volume}x')
+        if momentum != 'n/a':
+            setup_parts.append(f'Momentum: {momentum}')
+        if setup_parts:
+            lines.append(f'   Setup: {_html_escape(" | ".join(setup_parts))}')
+
         chart_url = candidate.get('tradingview_url')
         if chart_url:
-            lines.append(f'   Chart: {chart_url}')
+            lines.append(f'   Chart: {_link_html(chart_url)}')
         news_url = _news_search_url(candidate)
         if news_url:
-            lines.append(f'   News: {news_url}')
+            lines.append(f'   News: {_link_html(news_url)}')
         lines.append('')
     if len(candidates) > display_limit:
         lines.append(f'...showing {display_limit} of {len(candidates)} candidates')
@@ -517,7 +634,7 @@ def _build_pretrade_output(base_dir: Path, since: datetime | None) -> str | None
 
     lines = [
         'PRETRADE OUTPUT',
-        f'Checked at: {checked_at_text}',
+        f'Checked at: {_html_escape(checked_at_text)}',
         f'Executable: {len(executables)} | Rejected: {len(rejected)}',
         '',
         'EXECUTABLES (ranked by scan)',
@@ -530,16 +647,25 @@ def _build_pretrade_output(base_dir: Path, since: datetime | None) -> str | None
             symbol = str(result.get('symbol') or '').strip()
             scan_rank = _format_rank(result.get('scan_rank'))
             exec_rank = _format_rank(result.get('exec_rank'), fallback=index)
-            lines.append(f'{exec_rank}. {symbol} (scan #{scan_rank}) -> EXECUTABLE')
+            lines.append(
+                f'{_html_escape(exec_rank)}. {_html_escape(symbol)} '
+                f'(scan #{_html_escape(scan_rank)}) -> EXECUTABLE'
+            )
             spread_pct = _format_percent(_pretrade_spread_pct(result))
             drift = _format_percent(result.get('price_drift_pct'))
             rr = _format_numeric(result.get('real_rr'))
             stop = _format_percent(result.get('real_stop_distance_pct'))
-            lines.append(f'  Spread: {spread_pct} | Drift: {drift} | RR: {rr} | Stop: {stop}')
+            lines.append(
+                f'  Spread: {_html_escape(spread_pct)} | Drift: {_html_escape(drift)} '
+                f'| RR: {_html_escape(rr)} | Stop: {_html_escape(stop)}'
+            )
             entry = _format_numeric(result.get('planned_entry'))
             stop_px = _format_numeric(result.get('planned_stop'))
             target = _format_numeric(result.get('planned_target'))
-            lines.append(f'  Entry: {entry} | Stop: {stop_px} | Target: {target}')
+            lines.append(
+                f'  Entry: {_html_escape(entry)} | Stop: {_html_escape(stop_px)} '
+                f'| Target: {_html_escape(target)}'
+            )
             lines.append('')
 
     lines.append('REJECTED (ranked by scan)')
@@ -550,8 +676,10 @@ def _build_pretrade_output(base_dir: Path, since: datetime | None) -> str | None
             symbol = str(result.get('symbol') or '').strip()
             scan_rank = _format_rank(result.get('scan_rank'))
             reason = _truncate_text(str(result.get('reject_reason') or 'Unknown reason'))
-            lines.append(f'{symbol} (scan #{scan_rank}) -> REJECTED')
-            lines.append(f'  Reason: {reason}')
+            lines.append(
+                f'{_html_escape(symbol)} (scan #{_html_escape(scan_rank)}) -> REJECTED'
+            )
+            lines.append(f'  Reason: {_html_escape(reason)}')
             lines.append('')
 
     return '\n'.join(lines).strip()
@@ -751,22 +879,32 @@ def _build_reply_text(
     job_id: str | None,
     *,
     force_send: bool = False,
-) -> str | None:
+    use_html: bool = False,
+) -> tuple[str | None, str | None]:
     if OUTPUT_MODE == 'none':
-        return None
+        return None, None
     if force_send:
-        return output
+        parse_mode = 'HTML' if use_html and output else None
+        return output, parse_mode
     if command_name in NO_REPLY_COMMANDS:
-        return None
+        return None, None
     if command_name in SILENT_COMMANDS:
-        return command_summary_text(command_name, return_code, job_id)
+        text = command_summary_text(command_name, return_code, job_id)
+        parse_mode = 'HTML' if use_html and text else None
+        return text, parse_mode
     if OUTPUT_MODE == 'full':
-        return output
+        parse_mode = 'HTML' if use_html and output else None
+        return output, parse_mode
     if OUTPUT_MODE == 'errors':
         if return_code != 0:
-            return output
-        return command_summary_text(command_name, return_code, job_id)
-    return command_summary_text(command_name, return_code, job_id)
+            parse_mode = 'HTML' if use_html and output else None
+            return output, parse_mode
+        text = command_summary_text(command_name, return_code, job_id)
+        parse_mode = 'HTML' if use_html and text else None
+        return text, parse_mode
+    text = command_summary_text(command_name, return_code, job_id)
+    parse_mode = 'HTML' if use_html and text else None
+    return text, parse_mode
 
 
 def _env_truthy(value: str | None) -> bool:
@@ -878,6 +1016,84 @@ def _next_run_for_spec(spec: ScheduleSpec, now: datetime) -> datetime:
     return now + timedelta(days=1)
 
 
+def _parse_iso_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _state_path_for_command(command_name: str) -> Path | None:
+    if command_name in {"scan", "universe", "pretrade"}:
+        return BASE_DIR / "state" / f"{command_name}_state.json"
+    if command_name == "market_data":
+        return BASE_DIR / "state" / "market_data_state.json"
+    if command_name == "mooner":
+        return BASE_DIR / "MoonerState.json"
+    return None
+
+
+def _load_command_last_run(command_name: str) -> datetime | None:
+    path = _state_path_for_command(command_name)
+    if path is None or not path.exists():
+        return None
+    if command_name == "mooner":
+        try:
+            stats = path.stat()
+        except OSError:
+            return None
+        return datetime.fromtimestamp(stats.st_mtime, tz=timezone.utc)
+    payload = _load_json(path)
+    if not isinstance(payload, dict):
+        return None
+    return _parse_iso_timestamp(payload.get("last_run"))
+
+
+def _previous_run_for_spec(spec: ScheduleSpec, now: datetime) -> datetime | None:
+    for offset in range(0, 8):
+        candidate_date = (now - timedelta(days=offset)).date()
+        if candidate_date.weekday() not in spec.days:
+            continue
+        candidate = datetime.combine(
+            candidate_date,
+            time(spec.hour, spec.minute, spec.second),
+            tzinfo=now.tzinfo,
+        )
+        if candidate <= now:
+            return candidate
+    return None
+
+
+def _detect_missed_schedule_runs(
+    specs: list[ScheduleSpec],
+    now: datetime,
+    logger: logging.Logger,
+) -> list[ScheduleCatchup]:
+    catchups: list[ScheduleCatchup] = []
+    for spec in specs:
+        due = _previous_run_for_spec(spec, now)
+        if due is None:
+            continue
+        overdue = now - due
+        if overdue < timedelta(0) or overdue > SCHEDULE_CATCHUP_WINDOW:
+            continue
+        last_run = _load_command_last_run(spec.command_name)
+        if last_run and last_run.astimezone(now.tzinfo) >= due:
+            continue
+        catchups.append(ScheduleCatchup(spec=spec, expected_at=due))
+        logger.info(
+            "Scheduled command %s appears missed (expected %s).",
+            spec.command_name,
+            _format_timestamp(due),
+        )
+    return catchups
+
+
 def _describe_schedule_spec(spec: ScheduleSpec) -> str:
     day_names = [DAY_NAMES.get(day, str(day)) for day in sorted(spec.days)]
     day_text = ",".join(day_names) if day_names else "none"
@@ -887,18 +1103,20 @@ def _describe_schedule_spec(spec: ScheduleSpec) -> str:
     return f"{spec.command_name}: {day_text} {time_text} ({spec.source})"
 
 
-def _load_schedule_specs(logger: logging.Logger) -> tuple[list[ScheduleSpec], int | None, bool]:
+def _load_schedule_specs(
+    logger: logging.Logger,
+) -> tuple[list[ScheduleSpec], int | None, bool, list[ScheduleCatchup]]:
     if not _env_truthy(os.getenv("OPS_SCHEDULE_ENABLED")):
-        return [], None, False
+        return [], None, False, []
     chat_value = os.getenv("OPS_SCHEDULE_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID")
     if not chat_value:
         logger.warning("Schedule enabled but no OPS_SCHEDULE_CHAT_ID/TELEGRAM_CHAT_ID set.")
-        return [], None, False
+        return [], None, False, []
     try:
         chat_id = int(chat_value)
     except ValueError:
         logger.warning("Invalid schedule chat id: %s", chat_value)
-        return [], None, False
+        return [], None, False, []
     use_utc = _env_truthy(os.getenv("OPS_SCHEDULE_USE_UTC"))
     specs: list[ScheduleSpec] = []
     for command_name, env_name in SCHEDULE_ENV_MAP.items():
@@ -911,7 +1129,10 @@ def _load_schedule_specs(logger: logging.Logger) -> tuple[list[ScheduleSpec], in
         )
     if not specs:
         logger.info("Schedule enabled but no entries configured.")
-    return specs, chat_id, use_utc
+        return specs, chat_id, use_utc, []
+    now = _schedule_now(use_utc)
+    catchups = _detect_missed_schedule_runs(specs, now, logger)
+    return specs, chat_id, use_utc, catchups
 
 
 def _build_scheduled_job(
@@ -993,6 +1214,23 @@ async def _schedule_tick(context: ContextTypes.DEFAULT_TYPE) -> None:
             spec.next_run = _next_run_for_spec(spec, now + timedelta(seconds=1))
 
 
+async def _run_startup_schedule_catchups(context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger = context.application.bot_data.get("logger")
+    if not logger:
+        return
+    catchups: list[ScheduleCatchup] = context.application.bot_data.get("startup_schedule_catchups", [])
+    if not catchups:
+        return
+    for catchup in catchups:
+        logger.info(
+            "Running missed scheduled command %s expected %s",
+            catchup.spec.command_name,
+            _format_timestamp(catchup.expected_at),
+        )
+        await _trigger_scheduled_job(catchup.spec, context)
+    context.application.bot_data.pop("startup_schedule_catchups", None)
+
+
 async def _execute_command(
     job: RunningJob,
     context: ContextTypes.DEFAULT_TYPE,
@@ -1030,7 +1268,12 @@ async def _execute_command(
             try:
                 await context.bot.send_message(chat_id=job.chat_id, text=reply_text)
             except Exception as send_exc:  # noqa: BLE001 - log and continue
-                logger.error('Failed to send Telegram reply: %s', send_exc)
+                logger.error(
+                    'Failed to send Telegram reply to chat %s for job %s: %s',
+                    job.chat_id,
+                    job.job_id,
+                    send_exc,
+                )
         async with running_lock:
             running_jobs.pop(job.job_id, None)
         return
@@ -1086,20 +1329,30 @@ async def _execute_command(
         output.replace("\n", "\\n"),
     )
 
-    reply_text = _build_reply_text(
+    reply_text, parse_mode = _build_reply_text(
         job.command_name,
         process.returncode or 0,
         output,
         job.job_id,
         force_send=job.command_name in PRODUCT_OUTPUT_COMMANDS,
+        use_html=job.command_name in PRODUCT_OUTPUT_COMMANDS,
     )
     if job.command_name == 'pretrade' and process.returncode == 0:
         reply_text = None
     if reply_text and job.chat_id is not None:
         try:
-            await context.bot.send_message(chat_id=job.chat_id, text=reply_text)
+            await context.bot.send_message(
+                chat_id=job.chat_id,
+                text=reply_text,
+                parse_mode=parse_mode,
+            )
         except Exception as send_exc:  # noqa: BLE001 - log and continue
-            logger.error('Failed to send Telegram reply: %s', send_exc)
+            logger.error(
+                'Failed to send Telegram reply to chat %s for job %s: %s',
+                job.chat_id,
+                job.job_id,
+                send_exc,
+            )
 
     async with running_lock:
         running_jobs.pop(job.job_id, None)
@@ -1262,15 +1515,24 @@ def main() -> None:
     application.add_handler(CommandHandler("pretrade", handle_command))
     application.add_handler(CommandHandler("status", handle_command))
     application.add_handler(CommandHandler("market_data", handle_command))
+    application.add_handler(CommandHandler("mooner", handle_command))
+    application.add_handler(CommandHandler("yolo", handle_command))
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
     application.add_handler(MessageHandler(filters.ALL, log_update), group=1)
     application.add_error_handler(handle_error)
 
-    schedule_specs, schedule_chat_id, schedule_use_utc = _load_schedule_specs(logger)
+    (
+        schedule_specs,
+        schedule_chat_id,
+        schedule_use_utc,
+        schedule_catchups,
+    ) = _load_schedule_specs(logger)
     if schedule_specs and schedule_chat_id is not None:
         application.bot_data["schedule_specs"] = schedule_specs
         application.bot_data["schedule_chat_id"] = schedule_chat_id
         application.bot_data["schedule_use_utc"] = schedule_use_utc
+        if schedule_catchups:
+            application.bot_data["startup_schedule_catchups"] = schedule_catchups
         for spec in schedule_specs:
             logger.info("Scheduled job configured: %s", _describe_schedule_spec(spec))
         if application.job_queue:
@@ -1280,6 +1542,12 @@ def main() -> None:
                 first=5,
                 name="ops_schedule",
             )
+            if schedule_catchups:
+                application.job_queue.run_once(
+                    _run_startup_schedule_catchups,
+                    when=5,
+                    name="ops_schedule_catchup",
+                )
 
     logger.info("Telegram command client started.")
     try:
