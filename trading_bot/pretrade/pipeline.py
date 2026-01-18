@@ -7,12 +7,13 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from src.market_data import yfinance_client
 from trading_bot.execution.open_trades import get_live_open_trade_count
 from trading_bot.run_state import finish_run, start_run
-from trading_bot.symbols import yfinance_symbol
-from trading_bot.pretrade.notifier import build_pretrade_message, send_pretrade_message
+from trading_bot.symbols import tradingview_symbol, yfinance_symbol
+from trading_bot.pretrade.notifier import build_pretrade_messages, send_pretrade_messages
 from trading_bot.pretrade.pretrade_gate import evaluate_pretrade
 from trading_bot.pretrade.spread_gate import SpreadGate
 from trading_bot.pretrade.spread_sampler import collect_spread_sample, write_spread_report
@@ -53,9 +54,9 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
         spread_gate = SpreadGate(logger=logger)
 
         results: list[dict[str, Any]] = []
-        plans_by_symbol: dict[str, dict[str, float]] = {}
         spread_samples: list[dict[str, Any]] = []
-        for setup in setups:
+        for index, setup in enumerate(setups, start=1):
+            scan_rank = _extract_scan_rank(setup, index)
             parsed = _parse_setup_candidate(setup)
             if parsed is None:
                 results.append(
@@ -64,17 +65,18 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
                         open_trades_count=open_trades_count,
                         checked_at=checked_at,
                         reason='Invalid setup data',
+                        scan_rank=scan_rank,
+                        display_ticker=_extract_display_ticker(setup),
+                        tradingview_url=_extract_tradingview_url(setup),
                     )
                 )
                 continue
             symbol, planned_entry, planned_stop, planned_target = parsed
-            plans_by_symbol[symbol] = {
-                'planned_entry': planned_entry,
-                'planned_stop': planned_stop,
-                'planned_target': planned_target,
-            }
 
             display_ticker = _extract_display_ticker(setup)
+            tradingview_url = _extract_tradingview_url(setup)
+            if not tradingview_url:
+                tradingview_url = _build_tradingview_url(symbol, display_ticker)
             quote_symbol = _resolve_quote_symbol(symbol, display_ticker, logger)
             quote = yfinance_client.get_quote(quote_symbol)
             if quote is None:
@@ -84,6 +86,9 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
                         open_trades_count=open_trades_count,
                         checked_at=checked_at,
                         reason='No live price from yfinance',
+                        scan_rank=scan_rank,
+                        display_ticker=display_ticker,
+                        tradingview_url=tradingview_url,
                     )
                 )
                 continue
@@ -117,6 +122,9 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
                         open_trades_count=open_trades_count,
                         checked_at=checked_at,
                         reason=invalid_reason or 'Invalid quote data from yfinance',
+                        scan_rank=scan_rank,
+                        display_ticker=display_ticker,
+                        tradingview_url=tradingview_url,
                     )
                 )
                 continue
@@ -136,8 +144,12 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
             result['planned_entry'] = planned_entry
             result['planned_stop'] = planned_stop
             result['planned_target'] = planned_target
+            result['scan_rank'] = scan_rank
+            result['display_ticker'] = display_ticker
+            result['tradingview_url'] = tradingview_url
             results.append(result)
 
+        _assign_exec_ranks(results)
         _write_results(base_dir, results, now, logger)
         try:
             report_path = write_spread_report(base_dir, spread_samples, now, logger)
@@ -146,9 +158,9 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
         except Exception as exc:  # noqa: BLE001 - spread reporting must not break pretrade
             logger.error('Failed to write spread report: %s', exc)
 
-        _print_results_table(results, plans_by_symbol)
-        message = build_pretrade_message(results, checked_at)
-        send_pretrade_message(message, logger)
+        messages = build_pretrade_messages(results, checked_at)
+        _print_results_messages(messages)
+        send_pretrade_messages(messages, logger)
         completed = True
     except Exception as exc:  # noqa: BLE001 - ensure run state is updated
         failed = True
@@ -241,6 +253,25 @@ def _extract_display_ticker(payload: dict[str, Any]) -> str | None:
     return None
 
 
+def _extract_tradingview_url(payload: dict[str, Any]) -> str | None:
+    value = payload.get('tradingview_url')
+    if value:
+        return str(value).strip()
+    return None
+
+
+def _build_tradingview_url(symbol: str, display_ticker: str | None) -> str | None:
+    if not symbol:
+        return None
+    tv_symbol = tradingview_symbol(symbol, short_name=display_ticker)
+    if not tv_symbol:
+        return None
+    safe_symbol = quote(tv_symbol.replace(' ', ''))
+    if ':' in tv_symbol:
+        return f'https://www.tradingview.com/chart/?symbol={safe_symbol}'
+    return f'https://www.tradingview.com/symbols/{safe_symbol}/'
+
+
 def _resolve_quote_symbol(
     symbol: str,
     display_ticker: str | None,
@@ -297,9 +328,13 @@ def _reject_result(
     ask: float | None = None,
     last: float | None = None,
     spread: float | None = None,
+    scan_rank: int | None = None,
+    display_ticker: str | None = None,
+    tradingview_url: str | None = None,
 ) -> dict[str, Any]:
     return {
         'symbol': symbol,
+        'display_ticker': display_ticker,
         'last': last,
         'bid': bid,
         'ask': ask,
@@ -313,6 +348,8 @@ def _reject_result(
         'status': 'REJECTED',
         'reject_reason': reason,
         'checked_at': checked_at,
+        'scan_rank': scan_rank,
+        'tradingview_url': tradingview_url,
     }
 
 
@@ -332,34 +369,45 @@ def _write_results(
         logger.error('Failed to write pretrade results to %s: %s', path, exc)
 
 
-def _print_results_table(
-    results: list[dict[str, Any]],
-    plans_by_symbol: dict[str, dict[str, float]],
-) -> None:
-    header = 'symbol | last | spread% | status'
-    separator = '--- | --- | --- | ---'
-    lines = [header, separator]
-    for result in results:
-        symbol = str(result.get('symbol', ''))
-        last = result.get('last')
-        spread = result.get('spread')
-        status = str(result.get('status', 'REJECTED'))
-        last_text = f'{last:.2f}' if isinstance(last, (int, float)) else 'n/a'
-        spread_text = f'{spread * 100:.2f}%' if isinstance(spread, (int, float)) else 'n/a'
-        lines.append(f'{symbol} | {last_text} | {spread_text} | {status}')
-        if status == 'EXECUTABLE':
-            plan = plans_by_symbol.get(symbol, {})
-            entry = _format_plan_value(plan.get('planned_entry'))
-            stop = _format_plan_value(plan.get('planned_stop'))
-            target = _format_plan_value(plan.get('planned_target'))
-            lines.append(f'  Entry: {entry} | Stop: {stop} | Target: {target}')
-    print('\n'.join(lines))
+def _print_results_messages(messages: list[str]) -> None:
+    if not messages:
+        return
+    print('\n\n'.join(messages))
 
 
-def _format_plan_value(value: float | None) -> str:
+def _extract_scan_rank(payload: dict[str, Any], default_rank: int) -> int:
+    for key in ('scan_rank', 'rank'):
+        if key in payload:
+            value = _to_int(payload.get(key))
+            if value and value > 0:
+                return value
+    return default_rank
+
+
+def _assign_exec_ranks(results: list[dict[str, Any]]) -> None:
+    executables = [
+        result for result in results if result.get('status') == 'EXECUTABLE'
+    ]
+    executables.sort(key=lambda item: _sort_rank(item, fallback=10**9))
+    for index, result in enumerate(executables, start=1):
+        result['exec_rank'] = index
+
+
+def _sort_rank(result: dict[str, Any], fallback: int) -> int:
+    value = _to_int(result.get('scan_rank'))
+    if value and value > 0:
+        return value
+    return fallback
+
+
+def _to_int(value: object | None) -> int | None:
     if value is None:
-        return 'n/a'
-    return f'{value:.2f}'
+        return None
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric
 
 
 __all__ = [

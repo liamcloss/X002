@@ -67,7 +67,8 @@ The bot uses polling and will keep running until interrupted.
 ## Command execution
 
 Commands are executed via async subprocesses, so multiple commands can run concurrently. If a command overlaps a running command group (for example, a second `/scan`), the bot responds that the command is already running. The bot also checks for command lock files in `state/` so it won’t start a scan or universe refresh if another process is already running. Output is truncated to `MAX_OUTPUT_CHARS`.
-For `/scan` and `/pretrade`, the bot replies with the output artifacts (SetupCandidates or pretrade report) instead of stdout/log noise. These replies are sent even if `OPS_NO_REPLY_COMMANDS` includes `scan` or `pretrade` (unless `OPS_OUTPUT_MODE=none`).
+For `/scan`, the bot replies with the output artifacts (SetupCandidates) instead of stdout/log noise. These replies are sent even if `OPS_NO_REPLY_COMMANDS` includes `scan` (unless `OPS_OUTPUT_MODE=none`).
+For `/pretrade`, the CLI sends per-setup Telegram messages directly to the chat that invoked the command; the ops bot does not send a summary reply on success.
 Scheduled jobs use the same conflict and lock checks; if a conflict is detected, the job is skipped (optionally notified via `OPS_SCHEDULE_NOTIFY_SKIPS`).
 To keep scheduled `market_data` or `universe` quiet, add them to `OPS_SILENT_COMMANDS` or `OPS_NO_REPLY_COMMANDS`.
 

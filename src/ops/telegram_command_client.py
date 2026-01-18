@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Set
+from urllib.parse import quote_plus
 
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
@@ -59,7 +60,7 @@ LOG_PATH = BASE_DIR / 'logs' / 'telegram_command_client.log'
 MAX_OUTPUT_CHARS = 3500
 MAX_MESSAGE_LOG_CHARS = 200
 JOB_COUNTER = itertools.count(1)
-PRODUCT_OUTPUT_COMMANDS = {'scan', 'pretrade'}
+PRODUCT_OUTPUT_COMMANDS = {'scan'}
 
 COMMAND_GROUPS = {
     "scan": {"scan", "ideas", "universe", "market_data"},
@@ -317,6 +318,20 @@ def _truncate_text(text: str | None, limit: int = 160) -> str:
     return f'{cleaned[:limit]}...'
 
 
+def _news_search_url(candidate: dict) -> str | None:
+    query_value = (
+        candidate.get('display_ticker')
+        or candidate.get('raw_ticker')
+        or candidate.get('ticker')
+        or candidate.get('symbol')
+        or ''
+    )
+    query = str(query_value).strip()
+    if not query:
+        return None
+    return f'https://news.google.com/search?q={quote_plus(f"{query} stock")}'
+
+
 def _load_json(path: Path) -> dict | list | None:
     if not path.exists():
         return None
@@ -381,16 +396,25 @@ def _build_scan_output(base_dir: Path, since: datetime | None) -> str | None:
         stop = _format_numeric(candidate.get('planned_stop') or candidate.get('stop_price'))
         target = _format_numeric(candidate.get('planned_target') or candidate.get('target_price'))
         rr = _format_numeric(candidate.get('rr'))
-        currency = str(candidate.get('currency_code') or '').strip().upper()
-        entry_text = f'{entry} {currency}'.strip()
+        currency_symbol = str(candidate.get('currency_symbol') or '').strip()
+        currency_code = str(candidate.get('currency_code') or '').strip().upper()
+        entry_text = entry if entry == 'n/a' else f'{currency_symbol}{entry}'.strip()
+        lines.append(f'{rank}. {symbol}')
         lines.append(
-            f'{rank}. {symbol} | Entry {entry_text} | Stop {stop} | Target {target} | RR {rr}'
+            f'   Entry: {entry_text} {currency_code} | Stop: {stop} | Target: {target} | RR: {rr}'
         )
         reason = _truncate_text(str(candidate.get('reason') or '').strip())
         volume = _format_numeric(candidate.get('volume_multiple'))
         momentum = _format_ratio_percent(candidate.get('momentum_5d'))
         if reason or volume != 'n/a' or momentum != 'n/a':
-            lines.append(f'   Reason: {reason}, volume {volume}x, momentum {momentum}')
+            lines.append(f'   Setup: {reason} | Vol: {volume}x | Momentum: {momentum}')
+        chart_url = candidate.get('tradingview_url')
+        if chart_url:
+            lines.append(f'   Chart: {chart_url}')
+        news_url = _news_search_url(candidate)
+        if news_url:
+            lines.append(f'   News: {news_url}')
+        lines.append('')
     if len(candidates) > display_limit:
         lines.append(f'...showing {display_limit} of {len(candidates)} candidates')
     return '\n'.join(lines)
@@ -404,6 +428,41 @@ def _pretrade_spread_pct(result: dict) -> float | None:
     if isinstance(spread, (int, float)):
         return float(spread) * 100
     return None
+
+
+def _format_rank(value: object | None, fallback: int | None = None) -> str:
+    if value is None:
+        return str(fallback) if fallback is not None else 'n/a'
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return str(fallback) if fallback is not None else 'n/a'
+    if numeric <= 0:
+        return str(fallback) if fallback is not None else 'n/a'
+    return str(numeric)
+
+
+def _result_scan_rank(result: dict) -> int:
+    value = result.get('scan_rank')
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return 10**9
+    if numeric <= 0:
+        return 10**9
+    return numeric
+
+
+def _ensure_pretrade_ranks(results: list[dict]) -> None:
+    for index, result in enumerate(results, start=1):
+        if _result_scan_rank(result) >= 10**9:
+            result['scan_rank'] = index
+
+    executables = [item for item in results if item.get('status') == 'EXECUTABLE']
+    executables.sort(key=_result_scan_rank)
+    for index, result in enumerate(executables, start=1):
+        if _format_rank(result.get('exec_rank'), fallback=None) == 'n/a':
+            result['exec_rank'] = index
 
 
 def _build_pretrade_output(base_dir: Path, since: datetime | None) -> str | None:
@@ -424,25 +483,40 @@ def _build_pretrade_output(base_dir: Path, since: datetime | None) -> str | None
     if results:
         checked_at = results[0].get('checked_at')
     checked_at_text = _format_lock_timestamp(str(checked_at)) if checked_at else 'unknown'
-    executable_count = sum(1 for item in results if item.get('status') == 'EXECUTABLE')
-    rejected_count = sum(1 for item in results if item.get('status') != 'EXECUTABLE')
+
+    if not results:
+        return '\n'.join(
+            [
+                'PRETRADE OUTPUT',
+                f'Checked at: {checked_at_text}',
+                'Executable: 0 | Rejected: 0',
+                '',
+                'No setups evaluated.',
+            ]
+        )
+
+    _ensure_pretrade_ranks(results)
+    executables = [item for item in results if item.get('status') == 'EXECUTABLE']
+    rejected = [item for item in results if item.get('status') != 'EXECUTABLE']
+    executables.sort(key=_result_scan_rank)
+    rejected.sort(key=_result_scan_rank)
 
     lines = [
         'PRETRADE OUTPUT',
         f'Checked at: {checked_at_text}',
-        f'Executable: {executable_count} | Rejected: {rejected_count}',
+        f'Executable: {len(executables)} | Rejected: {len(rejected)}',
         '',
+        'EXECUTABLES (ranked by scan)',
     ]
-    if not results:
-        lines.append('No setups evaluated.')
-        return '\n'.join(lines)
 
-    display_limit = min(15, len(results))
-    for result in results[:display_limit]:
-        symbol = str(result.get('symbol') or '').strip()
-        status = str(result.get('status') or 'REJECTED')
-        lines.append(f'{symbol} -> {status}')
-        if status == 'EXECUTABLE':
+    if not executables:
+        lines.append('None.')
+    else:
+        for index, result in enumerate(executables[:15], start=1):
+            symbol = str(result.get('symbol') or '').strip()
+            scan_rank = _format_rank(result.get('scan_rank'))
+            exec_rank = _format_rank(result.get('exec_rank'), fallback=index)
+            lines.append(f'{exec_rank}. {symbol} (scan #{scan_rank}) -> EXECUTABLE')
             spread_pct = _format_percent(_pretrade_spread_pct(result))
             drift = _format_percent(result.get('price_drift_pct'))
             rr = _format_numeric(result.get('real_rr'))
@@ -452,12 +526,20 @@ def _build_pretrade_output(base_dir: Path, since: datetime | None) -> str | None
             stop_px = _format_numeric(result.get('planned_stop'))
             target = _format_numeric(result.get('planned_target'))
             lines.append(f'  Entry: {entry} | Stop: {stop_px} | Target: {target}')
-        else:
+            lines.append('')
+
+    lines.append('REJECTED (ranked by scan)')
+    if not rejected:
+        lines.append('None.')
+    else:
+        for result in rejected[:15]:
+            symbol = str(result.get('symbol') or '').strip()
+            scan_rank = _format_rank(result.get('scan_rank'))
             reason = _truncate_text(str(result.get('reject_reason') or 'Unknown reason'))
+            lines.append(f'{symbol} (scan #{scan_rank}) -> REJECTED')
             lines.append(f'  Reason: {reason}')
-        lines.append('')
-    if len(results) > display_limit:
-        lines.append(f'...showing {display_limit} of {len(results)} results')
+            lines.append('')
+
     return '\n'.join(lines).strip()
 
 
@@ -846,12 +928,18 @@ async def _execute_command(
     running_jobs = context.application.bot_data["running_jobs"]
     running_lock = context.application.bot_data["running_jobs_lock"]
 
+    env = None
+    if job.command_name == 'pretrade' and job.chat_id is not None:
+        env = dict(os.environ)
+        env['TELEGRAM_CHAT_ID'] = str(job.chat_id)
+
     try:
         process = await asyncio.create_subprocess_exec(
             *job.args,
             cwd=str(BASE_DIR),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
     except Exception as exc:  # noqa: BLE001 - log and notify without crashing
         logger.error(
@@ -930,6 +1018,8 @@ async def _execute_command(
         job.job_id,
         force_send=job.command_name in PRODUCT_OUTPUT_COMMANDS,
     )
+    if job.command_name == 'pretrade' and process.returncode == 0:
+        reply_text = None
     if reply_text and job.chat_id is not None:
         try:
             await context.bot.send_message(chat_id=job.chat_id, text=reply_text)

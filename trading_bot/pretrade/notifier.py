@@ -5,49 +5,39 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import Iterable
+from urllib.parse import quote, quote_plus
 
 from trading_bot.messaging.telegram_client import send_message
+from trading_bot.symbols import tradingview_symbol
 
 ARROW = '→'
 
 
-def build_pretrade_message(results: Iterable[dict], checked_at: str) -> str:
-    lines = ['PRE-TRADE VIABILITY CHECK', '']
+def build_pretrade_messages(results: Iterable[dict], checked_at: str) -> list[str]:
+    results_list = list(results)
+    executables = [item for item in results_list if item.get('status') == 'EXECUTABLE']
+    rejected = [item for item in results_list if item.get('status') != 'EXECUTABLE']
+    executables.sort(key=_result_sort_rank)
+    rejected.sort(key=_result_sort_rank)
 
-    count = 0
-    for result in results:
-        count += 1
-        symbol = result.get('symbol', '')
-        status = result.get('status', 'REJECTED')
-        if status == 'EXECUTABLE':
-            lines.append(f'{symbol} {ARROW} EXECUTABLE')
-            lines.append(f'  Spread: {result["spread_pct"]:.2f}%')
-            lines.append(f'  Drift: {result["price_drift_pct"]:.2f}%')
-            lines.append(f'  RR: {result["real_rr"]:.2f}')
-            lines.append(f'  Stop: {result["real_stop_distance_pct"]:.2f}%')
-            entry = _format_value(result.get('planned_entry'))
-            stop = _format_value(result.get('planned_stop'))
-            target = _format_value(result.get('planned_target'))
-            lines.append(f'  Entry: {entry} | Stop: {stop} | Target: {target}')
-        else:
-            lines.append(f'{symbol} {ARROW} REJECTED')
-            lines.append(f'  Reason: {result.get("reject_reason")}')
-        lines.append('')
+    messages: list[str] = []
 
-    if count == 0:
-        lines.append('No setups to evaluate.')
-        lines.append('')
+    if executables:
+        for index, result in enumerate(executables, start=1):
+            messages.append(_build_executable_message(result, checked_at, index))
 
-    lines.append(f'Checked at: {_format_timestamp(checked_at)}')
-    lines.append('Execution is manual. Stops must be placed immediately.')
-    return '\n'.join(lines)
+    if rejected or not results_list:
+        messages.append(_build_rejected_message(rejected, checked_at, total=len(results_list)))
+
+    return messages
 
 
-def send_pretrade_message(message: str, logger: logging.Logger) -> None:
-    try:
-        send_message(message)
-    except Exception as exc:  # noqa: BLE001 - do not crash on Telegram failure
-        logger.error('Pretrade Telegram notification failed: %s', exc)
+def send_pretrade_messages(messages: Iterable[str], logger: logging.Logger) -> None:
+    for message in messages:
+        try:
+            send_message(message)
+        except Exception as exc:  # noqa: BLE001 - do not crash on Telegram failure
+            logger.error('Pretrade Telegram notification failed: %s', exc)
 
 
 def _format_value(value: object | None) -> str:
@@ -57,6 +47,128 @@ def _format_value(value: object | None) -> str:
         return f'{float(value):.2f}'
     except (TypeError, ValueError):
         return 'n/a'
+
+
+def _format_percent(value: object | None) -> str:
+    if value is None:
+        return 'n/a'
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 'n/a'
+    if numeric != numeric:
+        return 'n/a'
+    return f'{numeric:.2f}%'
+
+
+def _format_number(value: object | None) -> str:
+    if value is None:
+        return 'n/a'
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 'n/a'
+    if numeric != numeric:
+        return 'n/a'
+    return f'{numeric:.2f}'
+
+
+def _format_rank(value: object | None, fallback: int | None = None) -> str:
+    if value is None:
+        return str(fallback) if fallback is not None else 'n/a'
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return str(fallback) if fallback is not None else 'n/a'
+    if numeric <= 0:
+        return str(fallback) if fallback is not None else 'n/a'
+    return str(numeric)
+
+
+def _result_sort_rank(result: dict) -> int:
+    value = result.get('scan_rank')
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return 10**9
+    if numeric <= 0:
+        return 10**9
+    return numeric
+
+
+def _display_symbol(result: dict) -> str:
+    value = result.get('display_ticker') or result.get('symbol') or ''
+    return str(value).strip()
+
+
+def _chart_url(result: dict) -> str | None:
+    candidate = result.get('tradingview_url')
+    if candidate:
+        return str(candidate).strip()
+    symbol = result.get('symbol')
+    display = result.get('display_ticker')
+    if not symbol:
+        return None
+    tv_symbol = tradingview_symbol(str(symbol), short_name=str(display) if display else None)
+    if not tv_symbol:
+        return None
+    safe_symbol = quote(tv_symbol.replace(' ', ''))
+    if ':' in tv_symbol:
+        return f'https://www.tradingview.com/chart/?symbol={safe_symbol}'
+    return f'https://www.tradingview.com/symbols/{safe_symbol}/'
+
+
+def _news_url(result: dict) -> str | None:
+    query_value = result.get('display_ticker') or result.get('symbol') or ''
+    query = str(query_value).strip()
+    if not query:
+        return None
+    return f'https://news.google.com/search?q={quote_plus(f"{query} stock")}'
+
+
+def _build_executable_message(result: dict, checked_at: str, index: int) -> str:
+    symbol = _display_symbol(result)
+    scan_rank = _format_rank(result.get('scan_rank'))
+    exec_rank = _format_rank(result.get('exec_rank'), fallback=index)
+    entry = _format_value(result.get('planned_entry'))
+    stop = _format_value(result.get('planned_stop'))
+    target = _format_value(result.get('planned_target'))
+    lines = [
+        'PRE-TRADE EXECUTABLE',
+        f'{exec_rank}. {symbol} (scan #{scan_rank})',
+        f'Spread: {_format_percent(result.get("spread_pct"))}',
+        f'Drift: {_format_percent(result.get("price_drift_pct"))}',
+        f'RR: {_format_number(result.get("real_rr"))}',
+        f'Stop: {_format_percent(result.get("real_stop_distance_pct"))}',
+        f'Entry: {entry} | Stop: {stop} | Target: {target}',
+    ]
+    chart_url = _chart_url(result)
+    news_url = _news_url(result)
+    lines.append(f'Chart: {chart_url or "n/a"}')
+    lines.append(f'News: {news_url or "n/a"}')
+    lines.append(f'Checked at: {_format_timestamp(checked_at)}')
+    lines.append('Execution is manual. Stops must be placed immediately.')
+    return '\n'.join(lines)
+
+
+def _build_rejected_message(results: list[dict], checked_at: str, total: int) -> str:
+    lines = [
+        'PRE-TRADE REJECTED',
+        f'Rejected: {len(results)} of {total}',
+        '',
+    ]
+    if not results:
+        lines.append('None.')
+    else:
+        for result in results:
+            symbol = _display_symbol(result)
+            scan_rank = _format_rank(result.get('scan_rank'))
+            lines.append(f'{symbol} (scan #{scan_rank}) {ARROW} REJECTED')
+            lines.append(f'  Reason: {result.get("reject_reason")}')
+            lines.append('')
+    lines.append(f'Checked at: {_format_timestamp(checked_at)}')
+    lines.append('Execution is manual. Stops must be placed immediately.')
+    return '\n'.join(lines).strip()
 
 
 def _format_timestamp(value: object | None) -> str:
@@ -76,6 +188,6 @@ def _format_timestamp(value: object | None) -> str:
 
 
 __all__ = [
-    'build_pretrade_message',
-    'send_pretrade_message',
+    'build_pretrade_messages',
+    'send_pretrade_messages',
 ]

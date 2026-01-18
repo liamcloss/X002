@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from urllib.parse import quote_plus
 
 _RANK_EMOJIS = ("🥇", "🥈", "🥉")
 _SEPARATOR = "--------------------------------"
@@ -44,6 +45,19 @@ def _format_volume_multiple(value: float | None) -> str:
     return f'{floored:.{decimals}f}'
 
 
+def _news_search_url(candidate: dict) -> str | None:
+    display_ticker = (
+        candidate.get('display_ticker')
+        or candidate.get('raw_ticker')
+        or candidate.get('ticker')
+        or ''
+    )
+    query = str(display_ticker).strip()
+    if not query:
+        return None
+    return f'https://news.google.com/search?q={quote_plus(f"{query} stock")}'
+
+
 def _format_candidate(candidate: dict, rank: int) -> str:
     emoji = _RANK_EMOJIS[rank] if rank < len(_RANK_EMOJIS) else "⭐"
     symbol = candidate["currency_symbol"]
@@ -52,30 +66,30 @@ def _format_candidate(candidate: dict, rank: int) -> str:
     volume_multiple = _format_volume_multiple(candidate.get("volume_multiple"))
 
     display_ticker = candidate.get('display_ticker') or candidate['ticker']
+    price = candidate['price']
+    stop_pct = _scale_to_percent(candidate['stop_pct'])
+    target_pct = _scale_to_percent(candidate['target_pct'])
     lines = [
         f"{emoji} {display_ticker}",
-        _SEPARATOR,
-        f"Reason: {reason}, {volume_multiple}× volume, {momentum}",
-        "",
-        f"Price: {symbol}{candidate['price']:.2f} {candidate['currency_code']}",
-        f"20D High Distance: {_scale_to_percent(candidate['pct_from_20d_high']):.2f}%",
-        "",
+        f"Setup: {reason} | Vol: {volume_multiple}x | Momentum: {momentum}",
         (
-            f"Stop: −{_scale_to_percent(candidate['stop_pct']):.2f}% → "
-            f"{symbol}{candidate['stop_price']:.2f}"
+            f"Price: {symbol}{price:.2f} {candidate['currency_code']} | "
+            f"20D High Dist: {_scale_to_percent(candidate['pct_from_20d_high']):.2f}%"
         ),
         (
-            f"Target: +{_scale_to_percent(candidate['target_pct']):.2f}% → "
-            f"{symbol}{candidate['target_price']:.2f}"
+            f"Plan: Entry {symbol}{price:.2f} | "
+            f"Stop {symbol}{candidate['stop_price']:.2f} (-{stop_pct:.2f}%) | "
+            f"Target {symbol}{candidate['target_price']:.2f} (+{target_pct:.2f}%) | "
+            f"RR {candidate['rr']:.2f}"
         ),
-        f"R:R = {candidate['rr']:.2f}",
-        "",
-        f"Position: £{candidate['position_size']}",
-        f"Risk: £{candidate['risk_gbp']}",
-        f"Reward: £{candidate['reward_gbp']}",
-        "",
-        f"Chart: {candidate['tradingview_url']}",
+        f"Size: £{candidate['position_size']} | Risk: £{candidate['risk_gbp']} | Reward: £{candidate['reward_gbp']}",
     ]
+    chart_url = candidate.get('tradingview_url')
+    if chart_url:
+        lines.append(f"Chart: {chart_url}")
+    news_url = _news_search_url(candidate)
+    if news_url:
+        lines.append(f"News: {news_url}")
     return "\n".join(lines)
 
 
@@ -118,7 +132,7 @@ def format_daily_scan_message(
     formatted_candidates = [
         _format_candidate(candidate, idx) for idx, candidate in enumerate(candidates)
     ]
-    lines.extend(formatted_candidates)
+    lines.append("\n\n".join(formatted_candidates))
     lines.append("")
     lines.append(_SEPARATOR)
     lines.extend(
