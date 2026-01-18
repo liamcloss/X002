@@ -19,6 +19,7 @@ from trading_bot.messaging import (
     send_error,
     send_message,
 )
+from trading_bot.mooner import run_mooner_sidecar
 from trading_bot.pretrade.setup_candidates import write_setup_candidates
 from trading_bot.symbols import tradingview_symbol
 from trading_bot.universe.active import ensure_active_column
@@ -164,6 +165,11 @@ def run_daily_scan(dry_run: bool, logger: logging.Logger | None = None) -> None:
     delivered = setup_candidates[:MAX_CANDIDATES]
     valid_count = len(ranked_candidates)
 
+    mooner_callouts: list[dict] = []
+    try:
+        mooner_callouts = run_mooner_sidecar(base_dir, logger)
+    except Exception as exc:  # noqa: BLE001 - mooner sidecar must not break scan
+        logger.warning("Mooner sidecar failed: %s", exc, exc_info=True)
     message = format_daily_scan_message(
         date=datetime.now().strftime('%Y-%m-%d'),
         mode=config.MODE,
@@ -173,6 +179,7 @@ def run_daily_scan(dry_run: bool, logger: logging.Logger | None = None) -> None:
         data_as_of=_format_data_as_of(data_as_of),
         generated_at=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ'),
         dry_run=dry_run,
+        mooner_callouts=mooner_callouts,
     )
 
     if dry_run:

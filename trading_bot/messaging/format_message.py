@@ -110,8 +110,11 @@ def format_daily_scan_message(
     data_as_of: str,
     generated_at: str,
     dry_run: bool,
+    mooner_callouts: list[dict] | None = None,
 ) -> str:
     """Build the daily scan message in Markdown."""
+
+    mooner_section = _format_mooner_section(mooner_callouts or [])
 
     if not candidates:
         lines = _format_header(date, mode, dry_run)
@@ -119,6 +122,13 @@ def format_daily_scan_message(
             [
                 "No valid trades today. Do nothing.",
                 "",
+            ]
+        )
+        if mooner_section:
+            lines.extend(mooner_section)
+            lines.append("")
+        lines.extend(
+            [
                 f"Scanned: {scanned_count} instruments",
                 "Valid setups: 0",
                 "",
@@ -134,6 +144,9 @@ def format_daily_scan_message(
     ]
     lines.append("\n\n".join(formatted_candidates))
     lines.append("")
+    if mooner_section:
+        lines.extend(mooner_section)
+        lines.append("")
     lines.append(_SEPARATOR)
     lines.extend(
         [
@@ -150,6 +163,25 @@ def format_daily_scan_message(
         ]
     )
     return "\n".join(lines)
+
+
+def _format_mooner_section(callouts: list[dict]) -> list[str]:
+    if not callouts:
+        return []
+    lines = ["⚠️ Mooner Watchlist (Informational Only)"]
+    for callout in callouts:
+        ticker = str(callout.get("ticker", "")).strip()
+        state = str(callout.get("state", "")).strip()
+        detected_on = str(callout.get("detected_on", "")).strip()
+        context = str(callout.get("context", "")).strip()
+        parts = [ticker, state]
+        detail = " — ".join(part for part in parts if part)
+        if detected_on:
+            detail = f"{detail} ({detected_on})"
+        if context:
+            detail = f"{detail}: {context}"
+        lines.append(f"- {detail}".strip())
+    return lines
 
 
 def format_error_message(error_text: str) -> str:

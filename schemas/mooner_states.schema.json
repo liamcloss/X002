@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Mooner States",
+  "type": "object",
+  "properties": {
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "states": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ticker": {
+            "type": "string",
+            "minLength": 1
+          },
+          "state": {
+            "type": "string",
+            "enum": ["DORMANT", "WARMING", "ARMED", "FIRING"]
+          },
+          "as_of": {
+            "type": "string",
+            "format": "date"
+          },
+          "context": {
+            "type": "string"
+          },
+          "metrics": {
+            "type": "object",
+            "additionalProperties": {
+              "type": ["number", "null"]
+            }
+          }
+        },
+        "required": ["ticker", "state", "as_of", "context", "metrics"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["states"],
+  "additionalProperties": false
+}

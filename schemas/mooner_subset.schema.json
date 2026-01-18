@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Mooner Subset",
+  "type": "object",
+  "properties": {
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "max_size": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "tickers": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "required": ["tickers"],
+  "additionalProperties": false
+}

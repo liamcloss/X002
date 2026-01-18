@@ -17,6 +17,7 @@ from trading_bot.market_data import cache
 from trading_bot.market_data.fetch_prices import run as refresh_market_data
 from trading_bot.messaging.format_message import format_daily_scan_message, format_error_message
 from trading_bot.messaging import telegram_client
+from trading_bot.mooner import run_mooner_sidecar
 from trading_bot.paper.paper_engine import (
     maybe_send_weekly_summary,
     open_paper_trade,
@@ -181,6 +182,11 @@ def _run_pipeline(dry_run: bool, logger: logging.Logger) -> bool:
     data_as_of_str = data_as_of.isoformat() if data_as_of else "Unknown"
     generated_at = datetime.now().isoformat(timespec='seconds')
     generated_at_utc = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    mooner_callouts: list[dict] = []
+    try:
+        mooner_callouts = run_mooner_sidecar(base_dir, logger)
+    except Exception as exc:  # noqa: BLE001 - mooner sidecar must not break scan
+        logger.warning("Mooner sidecar failed: %s", exc, exc_info=True)
     message = format_daily_scan_message(
         date=today_str,
         mode=config.MODE,
@@ -190,6 +196,7 @@ def _run_pipeline(dry_run: bool, logger: logging.Logger) -> bool:
         data_as_of=data_as_of_str,
         generated_at=generated_at,
         dry_run=dry_run,
+        mooner_callouts=mooner_callouts,
     )
     if skipped:
         logger.warning("%s instruments skipped due to data errors.", skipped)

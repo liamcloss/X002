@@ -30,6 +30,10 @@ TARGET_PERCENT_RANGE = (None, None)
 COOLDOWN_DAYS = None
 PULLBACK_LIMITS = None
 
+MOONER_SUBSET_TICKERS: tuple[str, ...] = ()
+MOONER_SUBSET_MAX = 10
+MOONER_EMIT_WHILE_FIRING = True
+
 
 def load_secrets(env_file: str | None = None) -> dict[str, str]:
     """Load required secrets from .env and return them without logging values."""

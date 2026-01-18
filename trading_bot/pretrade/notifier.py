@@ -142,6 +142,7 @@ def _build_executable_message(result: dict, checked_at: str, index: int) -> str:
         f'Stop: {_format_percent(result.get("real_stop_distance_pct"))}',
         f'Entry: {entry} | Stop: {stop} | Target: {target}',
     ]
+    lines.extend(_format_mooner_context(result))
     chart_url = _chart_url(result)
     news_url = _news_url(result)
     lines.append(f'Chart: {chart_url or "n/a"}')
@@ -165,6 +166,9 @@ def _build_rejected_message(results: list[dict], checked_at: str, total: int) ->
             scan_rank = _format_rank(result.get('scan_rank'))
             lines.append(f'{symbol} (scan #{scan_rank}) {ARROW} REJECTED')
             lines.append(f'  Reason: {result.get("reject_reason")}')
+            mooner_lines = _format_mooner_context(result)
+            if mooner_lines:
+                lines.extend([f'  {line}' for line in mooner_lines])
             lines.append('')
     lines.append(f'Checked at: {_format_timestamp(checked_at)}')
     lines.append('Execution is manual. Stops must be placed immediately.')
@@ -185,6 +189,20 @@ def _format_timestamp(value: object | None) -> str:
         parsed = parsed.replace(tzinfo=timezone.utc)
     parsed = parsed.astimezone(timezone.utc)
     return parsed.strftime('%Y-%m-%d %H:%M UTC')
+
+
+def _format_mooner_context(result: dict) -> list[str]:
+    state = result.get('mooner_state')
+    if not state:
+        return []
+    context = result.get('mooner_context')
+    as_of = result.get('mooner_as_of')
+    detail = f'Mooner: {state}'
+    if as_of:
+        detail = f'{detail} (as of {as_of})'
+    if context:
+        detail = f'{detail} — {context}'
+    return [f'⚠️ {detail} (Informational Only)']
 
 
 __all__ = [
