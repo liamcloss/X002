@@ -12,7 +12,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Set
 
@@ -43,6 +43,7 @@ COMMAND_MAP = {
     "universe": [PYTHON_EXECUTABLE, "main.py", "universe"],
     "pretrade": [PYTHON_EXECUTABLE, "main.py", "pretrade"],
     "status": [PYTHON_EXECUTABLE, "main.py", "status"],
+    "market_data": [PYTHON_EXECUTABLE, "-m", "trading_bot.market_data.fetch_prices"],
 }
 
 COMMAND_HELP = {
@@ -50,6 +51,7 @@ COMMAND_HELP = {
     "universe": "Refresh the trading universe.",
     "pretrade": "Run pretrade checks.",
     "status": "Show system status.",
+    "market_data": "Refresh the market data cache.",
     "help": "Show this help message.",
 }
 
@@ -64,14 +66,49 @@ COMMAND_GROUPS = {
     "universe": {"universe", "market_data"},
     "pretrade": {"ideas"},
     "status": set(),
+    "market_data": {"market_data", "scan", "universe"},
 }
 LOCK_GROUPS = {
-    "scan": {"scan", "market_data"},
-    "ideas": {"pretrade"},
-    "universe": {"universe"},
-    "market_data": {"market_data"},
+    "scan": {"scan", "market_data", "universe"},
+    "ideas": {"pretrade", "scan"},
+    "universe": {"universe", "scan", "market_data"},
+    "market_data": {"market_data", "scan", "universe"},
 }
 LOCK_DIR = BASE_DIR / 'state'
+SCHEDULE_ENV_MAP = {
+    "universe": "OPS_SCHEDULE_UNIVERSE",
+    "market_data": "OPS_SCHEDULE_MARKET_DATA",
+    "scan": "OPS_SCHEDULE_SCAN",
+    "pretrade": "OPS_SCHEDULE_PRETRADE",
+}
+DAY_ALIASES = {
+    "mon": 0,
+    "monday": 0,
+    "tue": 1,
+    "tues": 1,
+    "tuesday": 1,
+    "wed": 2,
+    "wednesday": 2,
+    "thu": 3,
+    "thur": 3,
+    "thurs": 3,
+    "thursday": 3,
+    "fri": 4,
+    "friday": 4,
+    "sat": 5,
+    "saturday": 5,
+    "sun": 6,
+    "sunday": 6,
+}
+DAY_NAMES = {
+    0: "mon",
+    1: "tue",
+    2: "wed",
+    3: "thu",
+    4: "fri",
+    5: "sat",
+    6: "sun",
+}
 
 
 @dataclass
@@ -91,6 +128,17 @@ class RunningJob:
 class LockConflict:
     name: str
     started_at: str | None
+
+
+@dataclass
+class ScheduleSpec:
+    command_name: str
+    days: set[int]
+    hour: int
+    minute: int
+    second: int
+    source: str
+    next_run: datetime | None = None
 
 
 def setup_logging() -> logging.Logger:
@@ -425,12 +473,21 @@ def _build_product_output(
     return None
 
 
-def _format_missing_product_output(command_name: str, return_code: int) -> str:
+def _format_missing_product_output(command_name: str, return_code: int, base_dir: Path) -> str:
+    state_path = base_dir / 'state' / f'{command_name}_state.json'
+    state = _load_json(state_path)
+    state_line = ''
+    if isinstance(state, dict) and state:
+        status = str(state.get('status') or 'unknown')
+        outcome = str(state.get('last_outcome') or 'unknown')
+        finished = _format_lock_timestamp(state.get('run_finished_at'))
+        state_line = f' Last state: status={status}, outcome={outcome}, finished {finished}.'
     if return_code == 0:
-        return (
-            f'{command_name} finished, but no output artifact was found.'
-        )
-    return f'{command_name} failed (exit code {return_code}); no output artifact found.'
+        return f'{command_name} finished, but no output artifact was found.{state_line}'
+    return (
+        f'{command_name} failed (exit code {return_code}); '
+        f'no output artifact found.{state_line}'
+    )
 
 
 def _format_elapsed(started_at: datetime) -> str:
@@ -555,6 +612,230 @@ def _build_reply_text(
     return command_summary_text(command_name, return_code, job_id)
 
 
+def _env_truthy(value: str | None) -> bool:
+    if not value:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_time_token(token: str) -> tuple[int, int, int] | None:
+    parts = token.strip().split(":")
+    if len(parts) not in {2, 3}:
+        return None
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+        second = int(parts[2]) if len(parts) == 3 else 0
+    except ValueError:
+        return None
+    if not (0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59):
+        return None
+    return hour, minute, second
+
+
+def _parse_days_token(token: str) -> set[int] | None:
+    cleaned = token.strip().lower()
+    if not cleaned:
+        return None
+    if cleaned in {"daily", "everyday"}:
+        return set(range(7))
+    if cleaned in {"weekday", "weekdays"}:
+        return {0, 1, 2, 3, 4}
+    if cleaned in {"weekend", "weekends"}:
+        return {5, 6}
+    if "," in cleaned:
+        days: set[int] = set()
+        for part in cleaned.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            day = DAY_ALIASES.get(part)
+            if day is None:
+                return None
+            days.add(day)
+        return days or None
+    day = DAY_ALIASES.get(cleaned)
+    if day is None:
+        return None
+    return {day}
+
+
+def _parse_schedule_value(
+    command_name: str,
+    value: str | None,
+    logger: logging.Logger,
+) -> list[ScheduleSpec]:
+    if not value:
+        return []
+    entries = [chunk.strip() for chunk in value.split(";") if chunk.strip()]
+    specs: list[ScheduleSpec] = []
+    for entry in entries:
+        tokens = entry.split()
+        if not tokens:
+            continue
+        if len(tokens) == 1:
+            days = set(range(7))
+            time_token = tokens[0]
+        else:
+            days = _parse_days_token(tokens[0])
+            time_token = tokens[1]
+            if days is None:
+                logger.warning("Invalid schedule days for %s: %s", command_name, entry)
+                continue
+        time_parts = _parse_time_token(time_token)
+        if not time_parts:
+            logger.warning("Invalid schedule time for %s: %s", command_name, entry)
+            continue
+        hour, minute, second = time_parts
+        specs.append(
+            ScheduleSpec(
+                command_name=command_name,
+                days=days,
+                hour=hour,
+                minute=minute,
+                second=second,
+                source=entry,
+            )
+        )
+    return specs
+
+
+def _schedule_now(use_utc: bool) -> datetime:
+    if use_utc:
+        return datetime.now(timezone.utc)
+    return datetime.now().astimezone()
+
+
+def _next_run_for_spec(spec: ScheduleSpec, now: datetime) -> datetime:
+    for offset in range(0, 8):
+        candidate_date = (now + timedelta(days=offset)).date()
+        if candidate_date.weekday() not in spec.days:
+            continue
+        candidate = datetime.combine(
+            candidate_date,
+            time(spec.hour, spec.minute, spec.second),
+            tzinfo=now.tzinfo,
+        )
+        if candidate > now:
+            return candidate
+    return now + timedelta(days=1)
+
+
+def _describe_schedule_spec(spec: ScheduleSpec) -> str:
+    day_names = [DAY_NAMES.get(day, str(day)) for day in sorted(spec.days)]
+    day_text = ",".join(day_names) if day_names else "none"
+    time_text = f"{spec.hour:02d}:{spec.minute:02d}"
+    if spec.second:
+        time_text = f"{time_text}:{spec.second:02d}"
+    return f"{spec.command_name}: {day_text} {time_text} ({spec.source})"
+
+
+def _load_schedule_specs(logger: logging.Logger) -> tuple[list[ScheduleSpec], int | None, bool]:
+    if not _env_truthy(os.getenv("OPS_SCHEDULE_ENABLED")):
+        return [], None, False
+    chat_value = os.getenv("OPS_SCHEDULE_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID")
+    if not chat_value:
+        logger.warning("Schedule enabled but no OPS_SCHEDULE_CHAT_ID/TELEGRAM_CHAT_ID set.")
+        return [], None, False
+    try:
+        chat_id = int(chat_value)
+    except ValueError:
+        logger.warning("Invalid schedule chat id: %s", chat_value)
+        return [], None, False
+    use_utc = _env_truthy(os.getenv("OPS_SCHEDULE_USE_UTC"))
+    specs: list[ScheduleSpec] = []
+    for command_name, env_name in SCHEDULE_ENV_MAP.items():
+        specs.extend(
+            _parse_schedule_value(
+                command_name,
+                os.getenv(env_name),
+                logger,
+            )
+        )
+    if not specs:
+        logger.info("Schedule enabled but no entries configured.")
+    return specs, chat_id, use_utc
+
+
+def _build_scheduled_job(
+    command_name: str,
+    command: list[str],
+    chat_id: int,
+) -> RunningJob:
+    job_id = f'{command_name}-sched-{next(JOB_COUNTER):04d}'
+    return RunningJob(
+        job_id=job_id,
+        command_name=command_name,
+        args=command,
+        started_at=datetime.now(timezone.utc),
+        chat_id=chat_id,
+        user_id=None,
+        username="scheduler",
+        groups=_command_groups(command_name),
+    )
+
+
+async def _trigger_scheduled_job(
+    spec: ScheduleSpec,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    logger = context.application.bot_data["logger"]
+    running_jobs = context.application.bot_data["running_jobs"]
+    running_lock = context.application.bot_data["running_jobs_lock"]
+    schedule_chat_id = context.application.bot_data.get("schedule_chat_id")
+    notify_skips = _env_truthy(os.getenv("OPS_SCHEDULE_NOTIFY_SKIPS"))
+    send_start = _env_truthy(os.getenv("OPS_SCHEDULE_SEND_START"))
+
+    if schedule_chat_id is None:
+        logger.warning("Scheduled job skipped; schedule_chat_id missing.")
+        return
+
+    command = COMMAND_MAP.get(spec.command_name)
+    if not command:
+        logger.warning("Scheduled command not configured: %s", spec.command_name)
+        return
+
+    job = _build_scheduled_job(spec.command_name, command, schedule_chat_id)
+    lock_conflicts = _find_lock_conflicts(job.groups)
+    conflicts: list[RunningJob]
+    async with running_lock:
+        conflicts = _find_conflicts(job.groups, running_jobs)
+        if not conflicts and not lock_conflicts:
+            running_jobs[job.job_id] = job
+    if conflicts or lock_conflicts:
+        message = _format_conflict_message(spec.command_name, conflicts, lock_conflicts)
+        logger.warning("Scheduled %s blocked: %s", spec.command_name, message)
+        if notify_skips:
+            try:
+                await context.bot.send_message(chat_id=schedule_chat_id, text=message)
+            except Exception as exc:  # noqa: BLE001 - log and continue
+                logger.error("Failed to send schedule skip message: %s", exc)
+        return
+
+    logger.info("Scheduled command started: %s (job %s)", spec.command_name, job.job_id)
+    if send_start and OUTPUT_MODE != "none":
+        try:
+            await context.bot.send_message(chat_id=schedule_chat_id, text=_format_start_message(job))
+        except Exception as exc:  # noqa: BLE001 - log and continue
+            logger.error("Failed to send schedule start message: %s", exc)
+
+    context.application.create_task(_execute_command(job, context))
+
+
+async def _schedule_tick(context: ContextTypes.DEFAULT_TYPE) -> None:
+    schedule_specs: list[ScheduleSpec] = context.application.bot_data.get("schedule_specs", [])
+    if not schedule_specs:
+        return
+    use_utc = bool(context.application.bot_data.get("schedule_use_utc", False))
+    now = _schedule_now(use_utc)
+    for spec in schedule_specs:
+        if spec.next_run is None:
+            spec.next_run = _next_run_for_spec(spec, now)
+        if spec.next_run and spec.next_run <= now:
+            await _trigger_scheduled_job(spec, context)
+            spec.next_run = _next_run_for_spec(spec, now + timedelta(seconds=1))
+
+
 async def _execute_command(
     job: RunningJob,
     context: ContextTypes.DEFAULT_TYPE,
@@ -619,7 +900,11 @@ async def _execute_command(
         if product_output:
             output = truncate_output(product_output)
         else:
-            output = _format_missing_product_output(job.command_name, process.returncode or 0)
+            output = _format_missing_product_output(
+                job.command_name,
+                process.returncode or 0,
+                BASE_DIR,
+            )
     if include_running_jobs:
         async with running_lock:
             prefix_text = _format_running_jobs(running_jobs, exclude_commands={'status'})
@@ -811,9 +1096,25 @@ def main() -> None:
     application.add_handler(CommandHandler("universe", handle_command))
     application.add_handler(CommandHandler("pretrade", handle_command))
     application.add_handler(CommandHandler("status", handle_command))
+    application.add_handler(CommandHandler("market_data", handle_command))
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
     application.add_handler(MessageHandler(filters.ALL, log_update), group=1)
     application.add_error_handler(handle_error)
+
+    schedule_specs, schedule_chat_id, schedule_use_utc = _load_schedule_specs(logger)
+    if schedule_specs and schedule_chat_id is not None:
+        application.bot_data["schedule_specs"] = schedule_specs
+        application.bot_data["schedule_chat_id"] = schedule_chat_id
+        application.bot_data["schedule_use_utc"] = schedule_use_utc
+        for spec in schedule_specs:
+            logger.info("Scheduled job configured: %s", _describe_schedule_spec(spec))
+        if application.job_queue:
+            application.job_queue.run_repeating(
+                _schedule_tick,
+                interval=30,
+                first=5,
+                name="ops_schedule",
+            )
 
     logger.info("Telegram command client started.")
     try:

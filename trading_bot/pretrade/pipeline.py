@@ -32,6 +32,11 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
     completed = False
 
     try:
+        scan_lock = base_dir / 'state' / 'scan.lock'
+        if scan_lock.exists():
+            logger.warning('Scan in progress; pretrade aborted to avoid stale candidates.')
+            return
+
         setup_path = _find_latest_setup_file(base_dir, logger)
         setups = _load_setup_candidates(setup_path, logger)
 

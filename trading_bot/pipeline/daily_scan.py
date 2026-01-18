@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import copy
+import json
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -69,8 +70,7 @@ def run_daily_scan(dry_run: bool = False) -> None:
     failed = False
     completed = False
     try:
-        _run_pipeline(dry_run=dry_run, logger=logger)
-        completed = True
+        completed = _run_pipeline(dry_run=dry_run, logger=logger)
     except Exception as exc:  # noqa: BLE001 - controlled error reporting
         failed = True
         logger.exception("Daily scan failed: %s", exc)
@@ -86,7 +86,7 @@ def run_daily_scan(dry_run: bool = False) -> None:
         finish_run(run_handle, logger, failed=failed, completed=completed)
 
 
-def _run_pipeline(dry_run: bool, logger: logging.Logger) -> None:
+def _run_pipeline(dry_run: bool, logger: logging.Logger) -> bool:
     base_dir = Path(__file__).resolve().parents[2]
     today = date.today()
     today_str = today.isoformat()
@@ -94,14 +94,14 @@ def _run_pipeline(dry_run: bool, logger: logging.Logger) -> None:
     universe_df = _load_universe(base_dir, logger)
     if universe_df.empty:
         logger.warning("Universe is empty; daily scan aborted.")
-        return
+        return False
 
     prices_dir = _ensure_cache_initialized(base_dir, logger)
     if prices_dir is None:
-        return
+        return False
 
-    logger.info("Refreshing market data cache.")
-    refresh_market_data()
+    if not _refresh_market_data_if_needed(base_dir, logger):
+        return False
 
     state = load_state()
     working_state = copy.deepcopy(state)
@@ -122,7 +122,8 @@ def _run_pipeline(dry_run: bool, logger: logging.Logger) -> None:
                 skipped += 1
                 continue
 
-            price_df = price_df.sort_index()
+            if not price_df.index.is_monotonic_increasing:
+                price_df = price_df.sort_index()
             last_date = cache.last_cached_date(price_df)
             if last_date is not None:
                 data_as_of = max(data_as_of, last_date) if data_as_of else last_date
@@ -130,11 +131,11 @@ def _run_pipeline(dry_run: bool, logger: logging.Logger) -> None:
             pullback = detect_pullback(price_df)
             _update_pullback_state(working_state, ticker, pullback, today)
 
-            filtered = apply_filters(price_df, max_pct_from_20d_high=0.05)
-            if filtered.empty:
+            if not pullback.get("in_pullback"):
                 continue
 
-            if not pullback.get("in_pullback"):
+            filtered = apply_filters(price_df, max_pct_from_20d_high=0.05)
+            if filtered.empty:
                 continue
 
             if in_cooldown(working_state, ticker, today) or is_alerted(working_state, ticker):
@@ -196,7 +197,7 @@ def _run_pipeline(dry_run: bool, logger: logging.Logger) -> None:
 
     if dry_run:
         print(message)
-        return
+        return True
 
     try:
         write_setup_candidates(
@@ -217,6 +218,7 @@ def _run_pipeline(dry_run: bool, logger: logging.Logger) -> None:
 
     telegram_client.send_message(message)
     save_state(working_state)
+    return True
 
 
 def _load_universe(base_dir: Path, logger: logging.Logger) -> pd.DataFrame:
@@ -238,6 +240,131 @@ def _ensure_cache_initialized(base_dir: Path, logger: logging.Logger) -> Path | 
         logger.error("Market data cache empty. Run Subsystem 2 to initialize OHLCV data.")
         return None
     return prices_dir
+
+
+def _refresh_market_data_if_needed(base_dir: Path, logger: logging.Logger) -> bool:
+    lock_path = base_dir / 'state' / 'market_data.lock'
+    lock_started = _read_lock_timestamp(lock_path)
+    if lock_started:
+        logger.warning(
+            'Market data refresh already running (started %s); scan aborted.',
+            _format_timestamp(lock_started),
+        )
+        return False
+
+    mode = str(getattr(config, 'SCAN_REFRESH_MODE', 'always')).lower()
+    max_age_hours = _safe_float(
+        getattr(config, 'MARKET_DATA_REFRESH_MAX_AGE_HOURS', 24.0),
+        default=24.0,
+    )
+    if max_age_hours <= 0:
+        max_age_hours = 24.0
+    last_run = _read_last_market_run(base_dir)
+    is_stale = _is_stale(last_run, max_age_hours)
+
+    if mode == 'skip':
+        if is_stale:
+            logger.warning(
+                'Market data refresh skipped but last run is stale (last run %s, max age %.1fh); '
+                'scan aborted.',
+                _format_timestamp(last_run),
+                max_age_hours,
+            )
+            return False
+        logger.info(
+            'Skipping market data refresh; last run %s within %.1fh.',
+            _format_timestamp(last_run),
+            max_age_hours,
+        )
+        return True
+
+    if mode == 'if_stale' and not is_stale:
+        logger.info(
+            'Skipping market data refresh; last run %s within %.1fh.',
+            _format_timestamp(last_run),
+            max_age_hours,
+        )
+        return True
+
+    logger.info(
+        'Refreshing market data cache (mode %s, last run %s).',
+        mode,
+        _format_timestamp(last_run),
+    )
+    refresh_ok = refresh_market_data()
+    if refresh_ok is False:
+        logger.warning('Market data refresh did not complete; scan aborted to avoid stale data.')
+        return False
+    return True
+
+
+def _read_last_market_run(base_dir: Path) -> datetime | None:
+    state_path = base_dir / 'state' / 'market_data_state.json'
+    payload = _load_json(state_path)
+    if not isinstance(payload, dict):
+        return None
+    return _parse_timestamp(payload.get('last_run'))
+
+
+def _load_json(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if isinstance(payload, dict):
+        return payload
+    return None
+
+
+def _parse_timestamp(value: object | None) -> datetime | None:
+    if value is None:
+        return None
+    text = str(value)
+    if text.endswith('Z'):
+        text = f'{text[:-1]}+00:00'
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _format_timestamp(value: datetime | str | None) -> str:
+    if value is None:
+        return 'unknown'
+    if isinstance(value, str):
+        parsed = _parse_timestamp(value)
+        if parsed is None:
+            return value
+        value = parsed
+    return value.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+
+
+def _is_stale(last_run: datetime | None, max_age_hours: float) -> bool:
+    if last_run is None:
+        return True
+    age = datetime.now(timezone.utc) - last_run
+    return age > timedelta(hours=max_age_hours)
+
+
+def _read_lock_timestamp(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    try:
+        return path.read_text(encoding='utf-8').strip() or None
+    except OSError:
+        return None
+
+
+def _safe_float(value: object, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _build_ticker_map(universe_df: pd.DataFrame) -> dict[str, dict[str, Any]]:

@@ -48,25 +48,29 @@ def detect_pullback(df: pd.DataFrame) -> dict:
     close = prepared["close"]
     high = prepared["high"]
 
-    high_20d = high.rolling(window=20).max()
-    last_idx = prepared.index[-1]
-    close_last = float(close.loc[last_idx])
-    high_20d_last = float(high_20d.loc[last_idx])
-
-    recent_high_window = high.tail(20)
-    high_values = recent_high_window.values
-    if np.isnan(high_values).any():
+    last_high_window = high.tail(20)
+    if last_high_window.isna().any():
         return {
             "in_pullback": False,
             "pullback_pct": np.nan,
             "breakout_high": np.nan,
             "days_since_high": np.nan,
         }
-    high_target = high_values.max()
+
+    high_values = last_high_window.values
+    high_target = float(np.max(high_values)) if len(high_values) else np.nan
+    if np.isnan(high_target):
+        return {
+            "in_pullback": False,
+            "pullback_pct": np.nan,
+            "breakout_high": np.nan,
+            "days_since_high": np.nan,
+        }
+
     last_high_idx = int(np.where(high_values == high_target)[0][-1])
     days_since_high = (len(high_values) - 1) - last_high_idx
-
-    pullback_pct = (high_20d_last - close_last) / high_20d_last if high_20d_last else np.nan
+    close_last = float(close.iloc[-1])
+    pullback_pct = (high_target - close_last) / high_target if high_target else np.nan
 
     in_pullback = (
         days_since_high <= 4
@@ -76,6 +80,6 @@ def detect_pullback(df: pd.DataFrame) -> dict:
     return {
         "in_pullback": bool(in_pullback),
         "pullback_pct": float(pullback_pct),
-        "breakout_high": float(high_20d_last),
+        "breakout_high": float(high_target),
         "days_since_high": int(days_since_high),
     }

@@ -45,31 +45,36 @@ def apply_filters(
     high = prepared["high"]
     volume = prepared["volume"]
 
-    ma20 = close.rolling(window=20).mean()
-    ma50 = close.rolling(window=50).mean()
-    high_20d = high.rolling(window=20).max()
-    volume_avg_20d = volume.rolling(window=20).mean()
+    close_last = float(close.iloc[-1])
+    last_20_close = close.tail(20)
+    last_50_close = close.tail(50)
+    last_20_high = high.tail(20)
+    last_20_volume = volume.tail(20)
 
-    last_idx = prepared.index[-1]
-    close_last = float(close.loc[last_idx])
-    ma20_last = float(ma20.loc[last_idx])
-    ma50_last = float(ma50.loc[last_idx])
-    high_20d_last = float(high_20d.loc[last_idx])
-    volume_avg_last = float(volume_avg_20d.loc[last_idx])
-    volume_last = float(volume.loc[last_idx])
-
-    recent_high_window = high.tail(20)
-    if recent_high_window.isna().any():
+    if (
+        last_20_close.isna().any()
+        or last_50_close.isna().any()
+        or last_20_high.isna().any()
+        or last_20_volume.isna().any()
+        or pd.isna(close_last)
+    ):
         return prepared.iloc[0:0].copy()
-    high_values = recent_high_window.values
-    high_target = high_values.max()
+
+    ma20_last = float(last_20_close.mean())
+    ma50_last = float(last_50_close.mean())
+    high_20d_last = float(last_20_high.max())
+    volume_avg_last = float(last_20_volume.mean())
+    volume_last = float(volume.iloc[-1])
+
+    high_values = last_20_high.values
+    high_target = float(np.max(high_values)) if len(high_values) else np.nan
     if pd.isna(high_target):
         return prepared.iloc[0:0].copy()
     last_high_idx = int(np.where(high_values == high_target)[0][-1])
     days_since_20d_high = (len(high_values) - 1) - last_high_idx
 
     volume_multiple = volume_last / volume_avg_last if volume_avg_last else np.nan
-    momentum_5d = (close_last / float(close.shift(5).loc[last_idx]) - 1) if len(prepared) > 5 else np.nan
+    momentum_5d = (close_last / float(close.iloc[-6]) - 1) if len(prepared) > 5 else np.nan
     extension_from_ma50 = (close_last - ma50_last) / ma50_last if ma50_last else np.nan
     pct_from_20d_high = (high_20d_last - close_last) / high_20d_last if high_20d_last else np.nan
 

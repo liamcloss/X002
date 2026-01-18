@@ -29,6 +29,16 @@ def run_universe_refresh() -> None:
         return
     failed = False
     completed = False
+    scan_lock = base_dir / 'state' / 'scan.lock'
+    if scan_lock.exists():
+        logger.warning('Scan in progress; universe refresh aborted to avoid contention.')
+        finish_run(run_handle, logger, failed=failed, completed=completed)
+        return
+    market_data_lock = base_dir / 'state' / 'market_data.lock'
+    if market_data_lock.exists():
+        logger.warning('Market data refresh in progress; universe refresh aborted.')
+        finish_run(run_handle, logger, failed=failed, completed=completed)
+        return
     universe_dir = base_dir / "universe"
     raw_dir = universe_dir / "raw"
     clean_dir = universe_dir / "clean"

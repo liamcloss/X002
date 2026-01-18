@@ -26,6 +26,26 @@ OPS_SILENT_COMMANDS=pretrade,scan
 OPS_NO_REPLY_COMMANDS=pretrade
 ```
 
+Optional scheduler controls (run jobs on a timetable from the same bot process):
+
+```
+OPS_SCHEDULE_ENABLED=1
+OPS_SCHEDULE_CHAT_ID=123456789          # where scheduled outputs go (falls back to TELEGRAM_CHAT_ID)
+OPS_SCHEDULE_USE_UTC=0                  # 1 = UTC, 0 = local time
+OPS_SCHEDULE_UNIVERSE=sun 20:00
+OPS_SCHEDULE_MARKET_DATA=daily 00:05
+OPS_SCHEDULE_SCAN=daily 06:30
+OPS_SCHEDULE_PRETRADE=weekday 08:00
+OPS_SCHEDULE_NOTIFY_SKIPS=1             # optional: notify if a scheduled job is blocked
+OPS_SCHEDULE_SEND_START=0               # optional: send a "started" message
+```
+
+Schedule format:
+- Use `daily HH:MM` or `HH:MM` for daily runs.
+- Use `mon|tue|...|sun HH:MM` for weekly runs.
+- Use `weekday`/`weekend` or comma lists like `mon,wed,fri 07:30`.
+- Multiple times can be separated with `;` (for example `daily 07:00; daily 12:00`).
+
 If you want to change the available commands, conflict groups, or log path, update `COMMAND_MAP`, `COMMAND_GROUPS`, `COMMAND_HELP`, or `LOG_PATH` in `src/ops/telegram_command_client.py`.
 
 Install ops dependencies from the repo root:
@@ -48,6 +68,8 @@ The bot uses polling and will keep running until interrupted.
 
 Commands are executed via async subprocesses, so multiple commands can run concurrently. If a command overlaps a running command group (for example, a second `/scan`), the bot responds that the command is already running. The bot also checks for command lock files in `state/` so it won’t start a scan or universe refresh if another process is already running. Output is truncated to `MAX_OUTPUT_CHARS`.
 For `/scan` and `/pretrade`, the bot replies with the output artifacts (SetupCandidates or pretrade report) instead of stdout/log noise. These replies are sent even if `OPS_NO_REPLY_COMMANDS` includes `scan` or `pretrade` (unless `OPS_OUTPUT_MODE=none`).
+Scheduled jobs use the same conflict and lock checks; if a conflict is detected, the job is skipped (optionally notified via `OPS_SCHEDULE_NOTIFY_SKIPS`).
+To keep scheduled `market_data` or `universe` quiet, add them to `OPS_SILENT_COMMANDS` or `OPS_NO_REPLY_COMMANDS`.
 
 If you use a virtual environment, set `OPS_PYTHON` to the correct interpreter (for example, `.venv\Scripts\python.exe` on Windows). The client defaults to the current interpreter.
 
@@ -57,6 +79,18 @@ The client loads `trading_bot/.env` to pick up `TELEGRAM_BOT_TOKEN` and other sh
 
 Execution logs are written to `logs/telegram_command_client.log` with timestamps, return codes, and the output (newline-escaped).
 Incoming updates are logged with `chat_id`, `chat_title`, and user info so you can set `TELEGRAM_CHAT_ID` without calling `getUpdates` manually.
+
+## Standalone entry points
+
+If you prefer Windows Task Scheduler, run these directly:
+
+```
+python main.py universe
+python -m trading_bot.market_data.fetch_prices
+python main.py scan
+python main.py pretrade
+python main.py status
+```
 
 ## Notes
 

@@ -63,7 +63,7 @@ class AdaptiveRateLimiter:
         return base_delay, delay
 
 
-def run() -> None:
+def run() -> bool:
     """Run the market data refresh pipeline."""
 
     base_dir = Path(__file__).resolve().parents[2]
@@ -91,19 +91,20 @@ def run() -> None:
     acquired = _record_run_start(market_state_path, lock_path, run_started_at, logger)
     if not acquired:
         logger.warning('Market data refresh already running; skipping this run.')
-        return
+        return False
 
     failed = False
     completed = False
+    success = False
     try:
         if not universe_path.exists():
             logger.error("Universe file missing: %s", universe_path)
-            return
+            return False
 
         tickers = _load_active_tickers(universe_path, logger)
         if not tickers:
             logger.warning("No active tickers found in universe.")
-            return
+            return False
 
         random.shuffle(tickers)
         prices_dir = cache.ensure_prices_dir(base_dir)
@@ -262,6 +263,7 @@ def run() -> None:
         )
         logger.info("Total refresh duration: %.1fs", run_duration)
         completed = True
+        success = True
     except Exception as exc:  # noqa: BLE001 - ensure status file reflects crash
         failed = True
         logger.exception("Market data refresh crashed: %s", exc)
@@ -271,6 +273,7 @@ def run() -> None:
             run_duration = time.monotonic() - run_start_monotonic
             _record_run_finish(market_state_path, run_started_at, run_duration, failed, completed)
             _clear_lock(lock_path, logger)
+    return success
 
 
 def _ensure_logger(base_dir: Path) -> logging.Logger:
