@@ -71,6 +71,7 @@ Commands are executed via async subprocesses, so multiple commands can run concu
 For `/scan`, the bot replies with the output artifacts (SetupCandidates) instead of stdout/log noise. These replies are sent even if `OPS_NO_REPLY_COMMANDS` includes `scan` (unless `OPS_OUTPUT_MODE=none`).
 For `/pretrade`, the CLI sends per-setup Telegram messages directly to the chat that invoked the command; the ops bot does not send a summary reply on success.
 For `/mooner`, the bot returns a concise summary of the latest Mooner sidecar callouts (stored in `MoonerCallouts.json`) so you can see any `FIRING` regimes without digging through logs. Each run also writes `MoonerCandidatePool.json`, `MoonerUniverse.json`, `MoonerSubset.json`, and `MoonerState.json` so you can audit every stage of the autonomous pipeline.
+For `/yolo`, the bot triggers the standalone penny-stock lottery, posts the week's pick (from `YOLO_Pick.json`), and writes the ledger so you keep a history of every draw.
 Scheduled jobs use the same conflict and lock checks; if a conflict is detected, the job is skipped (optionally notified via `OPS_SCHEDULE_NOTIFY_SKIPS`).
 To keep scheduled `market_data` or `universe` quiet, add them to `OPS_SILENT_COMMANDS` or `OPS_NO_REPLY_COMMANDS`.
 

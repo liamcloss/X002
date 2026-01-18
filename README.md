@@ -1,4 +1,4 @@
-# X002 Trading Bot
+mov# X002 Trading Bot
 
 A small CLI-driven trading bot that can scan markets, refresh a universe of instruments, and replay historical data for backtesting. This repository focuses on the core pipeline, data handling, and integrations (yfinance market data, Trading212 account/execution, Telegram). It is designed to be run locally with explicit configuration in place.
 
@@ -91,6 +91,7 @@ python main.py scan
 python main.py universe
 python main.py pretrade
 python main.py mooner
+python main.py yolo
 python main.py replay --days 90
 python main.py replay --start-date 2023-01-01 --days 60
 ```
@@ -101,6 +102,7 @@ python main.py replay --start-date 2023-01-01 --days 60
 - `universe`: Refreshes the Trading212 instrument universe.
 - `pretrade`: Evaluates yesterday's setup candidates against live quote rules, prints a console table, writes JSON outputs, and sends one consolidated Telegram summary.
 - `mooner`: Executes the Mooner regime sidecar and records any `FIRING` callouts for follow-up.
+- `yolo`: Runs the weekly penny-stock lottery that logs a £2 suggestion for the riskiest qualified ticker.
 - `replay`: Replays historical data for backtesting. Supports `--days` and `--start-date`.
 
 ## Pre-trade viability

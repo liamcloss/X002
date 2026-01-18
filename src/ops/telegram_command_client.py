@@ -586,6 +586,34 @@ def _build_mooner_output(base_dir: Path, since: datetime | None) -> str | None:
     return '\n'.join(lines).strip()
 
 
+def _build_yolo_output(base_dir: Path, since: datetime | None) -> str | None:
+    path = base_dir / 'YOLO_Pick.json'
+    if not path.exists():
+        return None
+    modified_at = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    if since and modified_at < since:
+        return None
+    payload = _load_json(path)
+    if not isinstance(payload, dict):
+        return None
+    lines = [
+        'YOLO PENNY LOTTERY',
+        f"Week of: {payload.get('week_of', 'unknown')}",
+        f"Ticker: {payload.get('ticker', 'unknown')}",
+        f"Price: {payload.get('price', 'unknown')}",
+        f"Score: {payload.get('yolo_score', 'unknown')}",
+    ]
+    stake_value = payload.get('stake_gbp')
+    if isinstance(stake_value, (int, float)):
+        lines.append(f"Stake: £{stake_value:.2f}")
+    else:
+        lines.append("Stake: n/a")
+    lines.extend(['', 'Rationale:'])
+    for line in payload.get('rationale', []):
+        lines.append(f"- {line}")
+    return '\n'.join(lines).strip()
+
+
 def _build_product_output(
     command_name: str,
     base_dir: Path,
@@ -597,6 +625,8 @@ def _build_product_output(
         return _build_pretrade_output(base_dir, since)
     if command_name == 'mooner':
         return _build_mooner_output(base_dir, since)
+    if command_name == 'yolo':
+        return _build_yolo_output(base_dir, since)
     return None
 
 
