@@ -27,6 +27,7 @@ from trading_bot.paths import (
     mooner_state_path,
     pretrade_viability_path,
     setup_candidates_path,
+    yolo_output_path,
 )
 from trading_bot.symbols import tradingview_symbol
 
@@ -777,7 +778,7 @@ def _short_ticker_label(ticker: str | None) -> str:
 
 
 def _build_yolo_output(base_dir: Path, since: datetime | None) -> str | None:
-    path = base_dir / 'YOLO_Pick.json'
+    path = yolo_output_path(base_dir, 'YOLO_Pick.json')
     if not path.exists():
         return None
     modified_at = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
