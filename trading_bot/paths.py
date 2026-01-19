@@ -38,10 +38,19 @@ def yolo_output_path(base_dir: Path | None = None, filename: str = "") -> Path:
     return output / filename if filename else output
 
 
+def news_scout_output_path(base_dir: Path | None = None, filename: str = "") -> Path:
+    output = outputs_subdir(base_dir, "news_scout")
+    return output / filename if filename else output
+
+
 def mooner_state_path(base_dir: Path | None = None) -> Path:
     root = base_dir or BASE_DIR
     state_dir = _ensure_dir(root / "state" / "mooner")
     return state_dir / "MoonerState.json"
+
+
+def yolo_blocked_path(base_dir: Path | None = None) -> Path:
+    return yolo_output_path(base_dir, "blocked_picks.json")
 
 
 def pretrade_outputs_dir(base_dir: Path | None = None) -> Path:

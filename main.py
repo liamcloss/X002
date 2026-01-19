@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
 from trading_bot.config import load_secrets, validate_mode
@@ -14,6 +13,7 @@ from trading_bot.pipeline.daily_scan import run_daily_scan
 from trading_bot.universe.refresh_universe import run_universe_refresh
 from trading_bot.pretrade.pipeline import run_pretrade
 from trading_bot.mooner import format_mooner_callout_lines, run_mooner_sidecar
+from trading_bot.news_scout import run_news_scout
 from trading_bot.status import run_status
 
 REQUIRED_DIRS = (
@@ -50,6 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("pretrade", help="Run pre-trade viability check")
     subparsers.add_parser("status", help="Show system status")
     subparsers.add_parser("mooner", help="Run the Mooner regime sidecar")
+    subparsers.add_parser("news-scout", help="Produce the news scout summary")
 
     replay_parser = subparsers.add_parser("replay", help="Run replay mode")
     replay_parser.add_argument("--days", type=int, default=90, help="Days to replay")
@@ -97,6 +98,39 @@ def _handle_mooner(logger, base_dir: Path) -> None:
     _print_mooner_callouts(callouts)
 
 
+def _handle_news_scout(logger, base_dir: Path) -> None:
+    logger.info('News scout sidecar starting')
+    entries = run_news_scout(base_dir, logger)
+    logger.info('News scout completed with %s entries', len(entries))
+    _print_news_scout_summary(entries)
+
+
+def _print_news_scout_summary(entries: list[dict]) -> None:
+    if not entries:
+        print('News scout produced no setup candidates.')
+        return
+    print('NEWS SCOUT SUMMARY')
+    for entry in entries:
+        symbol = entry.get('symbol') or 'UNKNOWN'
+        display = entry.get('display_ticker') or ''
+        rank = entry.get('scan_rank')
+        print(f'{rank}. {symbol} {f"({display})" if display else ""}')
+        entry_price = entry.get('entry')
+        stop = entry.get('stop')
+        target = entry.get('target')
+        print(f'  Entry: {entry_price} | Stop: {stop} | Target: {target}')
+        reason = entry.get('reason')
+        if reason:
+            print(f'  Setup: {reason}')
+        links = entry.get('links') or []
+        if links:
+            formatted = ' | '.join(
+                f"{link['label']}: {link['url']}" for link in links if link.get('url')
+            )
+            print(f'  Links: {formatted}')
+        print('')
+
+
 def _print_mooner_callouts(callouts: list[dict]) -> None:
     lines = format_mooner_callout_lines(callouts)
     if not lines:
@@ -135,6 +169,8 @@ def main() -> int:
         _handle_mooner(logger, base_dir)
     elif args.command == RunType.STATUS.value.lower():
         _handle_status(logger)
+    elif args.command in {RunType.NEWS_SCOUT.value.lower(), "news-scout"}:
+        _handle_news_scout(logger, base_dir)
     else:
         parser.print_help()
         return 1

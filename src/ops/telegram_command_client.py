@@ -15,7 +15,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable, Set
+from typing import Iterable, Set
 from urllib.parse import quote, quote_plus
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -25,6 +25,7 @@ from trading_bot.mooner import format_mooner_callout_lines
 from trading_bot.paths import (
     mooner_output_path,
     mooner_state_path,
+    news_scout_output_path,
     pretrade_viability_path,
     setup_candidates_path,
     yolo_output_path,
@@ -60,6 +61,7 @@ COMMAND_MAP = {
     "market_data": [PYTHON_EXECUTABLE, "-m", "trading_bot.market_data.fetch_prices"],
     "mooner": [PYTHON_EXECUTABLE, "main.py", "mooner"],
     "yolo": [PYTHON_EXECUTABLE, "extra_options/yolo_penny_lottery.py"],
+    "news_scout": [PYTHON_EXECUTABLE, "main.py", "news-scout"],
 }
 
 COMMAND_HELP = {
@@ -71,14 +73,19 @@ COMMAND_HELP = {
     "mooner": "Run the Mooner sidecar regime watch.",
     "yolo": "Run the penny stock YOLO lottery.",
     "yolo_history": "Display the YOLO ledger history.",
+    "news_scout": "Run the news scout summary (alias /news-scout).",
     "help": "Show this help message.",
+}
+
+COMMAND_ALIASES = {
+    "news-scout": "news_scout",
 }
 
 LOG_PATH = BASE_DIR / 'logs' / 'telegram_command_client.log'
 MAX_OUTPUT_CHARS = 3500
 MAX_MESSAGE_LOG_CHARS = 200
 JOB_COUNTER = itertools.count(1)
-PRODUCT_OUTPUT_COMMANDS = {'scan', 'mooner', 'yolo'}
+PRODUCT_OUTPUT_COMMANDS = {'scan', 'mooner', 'yolo', 'news_scout'}
 
 COMMAND_GROUPS = {
     "scan": {"scan", "ideas", "universe", "market_data"},
@@ -87,6 +94,7 @@ COMMAND_GROUPS = {
     "status": set(),
     "market_data": {"market_data", "scan", "universe"},
     "mooner": {"mooner", "scan", "market_data", "universe"},
+    "news_scout": {"news_scout"},
     "yolo": {"yolo"},
 }
 LOCK_GROUPS = {
@@ -95,6 +103,7 @@ LOCK_GROUPS = {
     "universe": {"universe", "scan", "market_data"},
     "market_data": {"market_data", "scan", "universe"},
     "mooner": {"mooner", "scan", "market_data", "universe"},
+    "news_scout": {"news_scout"},
     "yolo": {"yolo"},
 }
 LOCK_DIR = BASE_DIR / 'state'
@@ -504,6 +513,32 @@ def _build_yolo_link_line(ticker: str | None) -> str | None:
     return ' | '.join(links)
 
 
+def _build_pretrade_link_line(result: dict) -> str | None:
+    query = _search_query_from_candidate(result)
+    candidate_ticker = result.get('symbol')
+    display_ticker = result.get('display_ticker')
+    tv_source = result.get('tradingview_url') or _tradingview_url_from_ticker(display_ticker or candidate_ticker)
+    links: list[str] = []
+    if tv_source:
+        links.append(_link_html(tv_source, label='Chart'))
+    news_target = display_ticker or candidate_ticker or query
+    news_url = _news_search_url_for_ticker(news_target)
+    if news_url:
+        links.append(_link_html(news_url, label='News'))
+    reddit_url = _reddit_search_url(query)
+    if reddit_url:
+        links.append(_link_html(reddit_url, label='Reddit'))
+    x_url = _x_search_url(query)
+    if x_url:
+        links.append(_link_html(x_url, label='X'))
+    threads_url = _threads_search_url(query)
+    if threads_url:
+        links.append(_link_html(threads_url, label='Threads'))
+    if not links:
+        return None
+    return ' | '.join(links)
+
+
 def _load_json(path: Path) -> dict | list | None:
     if not path.exists():
         return None
@@ -722,6 +757,9 @@ def _build_pretrade_output(base_dir: Path, since: datetime | None) -> str | None
                 f'  Entry: {_html_escape(entry)} | Stop: {_html_escape(stop_px)} '
                 f'| Target: {_html_escape(target)}'
             )
+            links_line = _build_pretrade_link_line(result)
+            if links_line:
+                lines.append(f'  Links: {links_line}')
             lines.append('')
 
     lines.append('REJECTED (ranked by scan)')
@@ -736,6 +774,9 @@ def _build_pretrade_output(base_dir: Path, since: datetime | None) -> str | None
                 f'{_html_escape(symbol)} (scan #{_html_escape(scan_rank)}) -> REJECTED'
             )
             lines.append(f'  Reason: {_html_escape(reason)}')
+            links_line = _build_pretrade_link_line(result)
+            if links_line:
+                lines.append(f'  Links: {links_line}')
             lines.append('')
 
     return '\n'.join(lines).strip()
@@ -813,6 +854,60 @@ def _build_yolo_output(base_dir: Path, since: datetime | None) -> str | None:
     return '\n'.join(lines).strip()
 
 
+def _format_link_badges(links: list[dict[str, str]]) -> str:
+    badges: list[str] = []
+    for link in links:
+        url = link.get('url')
+        label = link.get('label') or 'LINK'
+        badges.append(_link_html(url, label=label))
+    return ' | '.join(badges)
+
+
+def _build_news_scout_output(base_dir: Path, since: datetime | None) -> str | None:
+    directory = news_scout_output_path(base_dir)
+    latest = _latest_file(directory, 'news_scout_*.json')
+    if not latest:
+        return None
+    if since:
+        modified_at = datetime.fromtimestamp(latest.stat().st_mtime, tz=timezone.utc)
+        if modified_at < since:
+            return None
+    payload = _load_json(latest)
+    if not isinstance(payload, dict):
+        return None
+    entries = payload.get('entries') if isinstance(payload.get('entries'), list) else []
+    as_of = payload.get('as_of') or latest.stem.split('_', 2)[-1]
+    lines = [
+        'NEWS SCOUT SUMMARY',
+        f'As of: {_html_escape(as_of)}',
+        f'Entries: {len(entries)}',
+        '',
+    ]
+    if not entries:
+        lines.append('No entries recorded.')
+        return '\n'.join(lines)
+
+    for index, entry in enumerate(entries, start=1):
+        symbol = _html_escape(str(entry.get('symbol') or 'UNKNOWN').strip())
+        display = entry.get('display_ticker')
+        scan_rank = _html_escape(_format_rank(entry.get('scan_rank')))
+        lines.append(f'{index}. {symbol} (scan #{scan_rank})')
+        entry_price = _html_escape(_format_numeric(entry.get('entry')))
+        stop = _html_escape(_format_numeric(entry.get('stop')))
+        target = _html_escape(_format_numeric(entry.get('target')))
+        lines.append(f'   Entry: {entry_price} | Stop: {stop} | Target: {target}')
+        reason = str(entry.get('reason') or '').strip()
+        if reason:
+            lines.append(f'   Setup: {_html_escape(reason)}')
+        link_badges = _format_link_badges(entry.get('links') or [])
+        if link_badges:
+            lines.append(f'   Links: {link_badges}')
+        if display:
+            lines.append(f'   Display ticker: {_html_escape(display)}')
+        lines.append('')
+    return '\n'.join(lines).strip()
+
+
 def _build_product_output(
     command_name: str,
     base_dir: Path,
@@ -826,6 +921,8 @@ def _build_product_output(
         return _build_mooner_output(base_dir, since)
     if command_name == 'yolo':
         return _build_yolo_output(base_dir, since)
+    if command_name == 'news_scout':
+        return _build_news_scout_output(base_dir, since)
     return None
 
 
@@ -1490,6 +1587,7 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     command_name = (update.message.text or "").lstrip("/").split()[0]
+    command_name = COMMAND_ALIASES.get(command_name, command_name)
     command = COMMAND_MAP.get(command_name)
     if not command:
         await update.message.reply_text("Unknown command.")
@@ -1601,6 +1699,7 @@ def main() -> None:
     application.add_handler(CommandHandler("market_data", handle_command))
     application.add_handler(CommandHandler("mooner", handle_command))
     application.add_handler(CommandHandler("yolo", handle_command))
+    application.add_handler(CommandHandler("news_scout", handle_command))
     application.add_handler(CommandHandler("yolo_history", handle_yolo_history))
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
     application.add_handler(MessageHandler(filters.ALL, log_update), group=1)

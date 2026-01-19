@@ -15,6 +15,8 @@ from trading_bot.market_data import cache
 from trading_bot.paths import mooner_output_path
 from trading_bot.universe.active import ensure_active_column
 
+CANDIDATE_POOL_FILENAME = "mooner_candidate_pool.json"
+
 FX_TO_GBP = {
     "USD": 0.8,
     "GBP": 1.0,

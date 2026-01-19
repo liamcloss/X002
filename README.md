@@ -190,4 +190,3 @@ The sidecar runs before the nightly scan, keeps its JSON artifacts under the rep
 - **All pre-trade setups rejected**: After market close, yfinance often has no bid/ask, so the spread gate rejects. Run pretrade during market hours or review the spread report for realistic caps.
 - **Ticker missing in yfinance**: Confirm the Trading212 symbol maps correctly to Yahoo via `trading_bot/symbols.py` and that `display_ticker` is present in `SetupCandidates.json`.
 - **Instrument missing from scans**: Check the `active` flag in `universe/clean/universe.parquet` and the auto-deactivation notes above.
-

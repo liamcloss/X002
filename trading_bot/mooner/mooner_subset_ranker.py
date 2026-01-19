@@ -47,8 +47,6 @@ def rank_mooner_subset(base_dir: Path, universe: Iterable[str], logger: logging.
 
 def _score_ticker(df: pd.DataFrame) -> tuple[float, float, int] | None:
     close = _get_series(df, ("close", "Close"))
-    high = _get_series(df, ("high", "High"))
-    low = _get_series(df, ("low", "Low"))
     if close is None or close.empty:
         return None
     close = close.dropna()

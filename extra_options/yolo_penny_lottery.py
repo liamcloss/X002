@@ -6,9 +6,9 @@ import json
 import logging
 import sys
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable, List
+from typing import List
 
 import pandas as pd
 
@@ -16,7 +16,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT_DIR))
 
 from trading_bot.market_data import cache
-from trading_bot.paths import yolo_output_path
+from trading_bot.paths import yolo_blocked_path, yolo_output_path
 
 YOLO_PICK_FILENAME = "YOLO_Pick.json"
 YOLO_LEDGER_FILENAME = "YOLO_Ledger.json"
@@ -24,6 +24,11 @@ MIN_PRICE = 0.20
 MAX_PRICE = 5.0
 MIN_DOLLAR_VOLUME = 5_000_000
 MIN_SHARE_VOLUME = 1_000_000
+RISK_CLOSE_MOVE = 1.0
+RISK_INTRADAY_RANGE = 0.5
+RISK_HIGH_VOLUME_SPIKE = 25.0
+RISK_LOW_ATR_RATIO = 0.08
+RISK_MICRO_PRICE = 0.5
 
 
 @dataclass(frozen=True)
@@ -57,6 +62,17 @@ def run_yolo_penny_lottery(base_dir: Path | None = None, logger: logging.Logger 
         return None
 
     best = sorted(candidates, key=lambda item: item.score, reverse=True)[0]
+    risk_reasons = _assess_pick_risk(best)
+    if risk_reasons:
+        blocked_payload = _build_blocked_payload(best, week_of, risk_reasons)
+        _record_blocked_pick(root, blocked_payload)
+        logger.warning(
+            "YOLO pick blocked for week %s (%s); reasons: %s",
+            week_of,
+            best.ticker,
+            "; ".join(risk_reasons),
+        )
+        return None
     payload = {
         "week_of": week_of.isoformat(),
         "ticker": best.ticker,
@@ -271,6 +287,63 @@ def _append_ledger(base_dir: Path, entry: dict) -> None:
             history = []
     history.append(entry)
     path.write_text(json.dumps(history, indent=2), encoding="utf-8")
+
+
+def _blocked_path(base_dir: Path) -> Path:
+    return yolo_blocked_path(base_dir)
+
+
+def _load_blocked_history(base_dir: Path) -> list[dict]:
+    path = _blocked_path(base_dir)
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    return payload
+
+
+def _record_blocked_pick(base_dir: Path, entry: dict) -> None:
+    history = _load_blocked_history(base_dir)
+    history.append(entry)
+    path = _blocked_path(base_dir)
+    path.write_text(json.dumps(history, indent=2), encoding="utf-8")
+
+
+def _build_blocked_payload(
+    candidate: CandidateMetrics,
+    week_of: date,
+    reasons: list[str],
+) -> dict:
+    return {
+        "week_of": week_of.isoformat(),
+        "ticker": candidate.ticker,
+        "price": round(candidate.close, 4),
+        "yolo_score": round(candidate.score, 4),
+        "rationale": candidate.rationale,
+        "stake_gbp": 2.00,
+        "intent": "LOTTERY_TICKET",
+        "blocked_reasons": reasons,
+        "blocked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _assess_pick_risk(candidate: CandidateMetrics) -> list[str]:
+    reasons: list[str] = []
+    if candidate.max_close_move >= RISK_CLOSE_MOVE:
+        reasons.append("Massive close move (>100%)")
+    if candidate.max_intraday_range >= RISK_INTRADAY_RANGE and not candidate.recent_high_breakout:
+        reasons.append("Extreme intraday range without breakout")
+    if candidate.volume_spike_ratio >= RISK_HIGH_VOLUME_SPIKE and candidate.atr_ratio < RISK_LOW_ATR_RATIO:
+        reasons.append("Huge spike but ATR still muted")
+    if candidate.close <= RISK_MICRO_PRICE:
+        reasons.append("Micro-cap price subject to manipulation")
+    if candidate.volume_spike_ratio >= RISK_HIGH_VOLUME_SPIKE and candidate.max_close_move >= 1.5:
+        reasons.append("Explosive spike coupled with outsized close move")
+    return list(dict.fromkeys(reasons))
 
 
 if __name__ == "__main__":
