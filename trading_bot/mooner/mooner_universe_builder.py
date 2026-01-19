@@ -12,6 +12,7 @@ import pandas as pd
 
 from trading_bot import config
 from trading_bot.market_data import cache
+from trading_bot.paths import mooner_output_path
 from trading_bot.universe.active import ensure_active_column
 from trading_bot.mooner.mooner_candidate_pool import FX_TO_GBP, DEFAULT_FX
 
@@ -98,7 +99,7 @@ def _write_universe(base_dir: Path, tickers: Iterable[str], as_of: date | None) 
         "as_of": as_of.isoformat() if as_of else date.today().isoformat(),
         "tickers": sorted(set(tickers)),
     }
-    path = base_dir / UNIVERSE_FILENAME
+    path = mooner_output_path(base_dir, UNIVERSE_FILENAME)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 

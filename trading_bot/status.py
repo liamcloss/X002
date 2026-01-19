@@ -12,6 +12,11 @@ from typing import Any
 from trading_bot import config
 from trading_bot.execution.open_trades import get_live_open_trade_count
 from trading_bot.paper import get_open_trade_count as get_paper_open_trade_count
+from trading_bot.paths import (
+    pretrade_spread_path,
+    pretrade_viability_path,
+    setup_candidates_path,
+)
 
 REQUIRED_DIRS = (
     'data',
@@ -42,7 +47,7 @@ def _collect_status(base_dir: Path, logger: logging.Logger) -> dict[str, Any]:
         'count': _count_files(base_dir / 'data' / 'prices', '*.parquet'),
     }
 
-    setup_path = base_dir / 'SetupCandidates.json'
+    setup_path = setup_candidates_path(base_dir)
     status['setup_candidates'] = _file_info(setup_path)
     if setup_path.exists():
         status['setup_candidates']['count'] = _count_candidates(setup_path, logger)
@@ -63,8 +68,8 @@ def _collect_status(base_dir: Path, logger: logging.Logger) -> dict[str, Any]:
     status['pretrade_state'] = _safe_load_json(base_dir / 'state' / 'pretrade_state.json')
     status['pretrade_lock'] = _lock_info(base_dir / 'state' / 'pretrade.lock')
 
-    status['latest_pretrade'] = _latest_file(base_dir / 'outputs', 'pretrade_viability_*.json')
-    status['latest_spread_report'] = _latest_file(base_dir / 'outputs', 'spread_report_*.json')
+    status['latest_pretrade'] = _latest_file(pretrade_viability_path(base_dir), 'pretrade_viability_*.json')
+    status['latest_spread_report'] = _latest_file(pretrade_spread_path(base_dir), 'spread_report_*.json')
 
     spread_samples = _safe_load_json(base_dir / 'state' / 'spread_samples.json')
     status['spread_samples'] = _count_spread_samples(spread_samples)

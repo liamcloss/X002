@@ -22,6 +22,12 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(BASE_DIR))
 
 from trading_bot.mooner import format_mooner_callout_lines
+from trading_bot.paths import (
+    mooner_output_path,
+    mooner_state_path,
+    pretrade_viability_path,
+    setup_candidates_path,
+)
 from trading_bot.symbols import tradingview_symbol
 
 from telegram import Update
@@ -63,6 +69,7 @@ COMMAND_HELP = {
     "market_data": "Refresh the market data cache.",
     "mooner": "Run the Mooner sidecar regime watch.",
     "yolo": "Run the penny stock YOLO lottery.",
+    "yolo_history": "Display the YOLO ledger history.",
     "help": "Show this help message.",
 }
 
@@ -423,6 +430,54 @@ def _link_html(url: str | None, label: str = 'LINK') -> str:
     return f'<a href="{safe_url}">{safe_label}</a>'
 
 
+def _load_yolo_ledger(base_dir: Path) -> list[dict]:
+    path = base_dir / 'YOLO_Ledger.json'
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [entry for entry in payload if isinstance(entry, dict)]
+
+
+def _format_yolo_history_message(base_dir: Path) -> str:
+    ledger = _load_yolo_ledger(base_dir)
+    if not ledger:
+        return 'YOLO history unavailable; no ledger entries found.'
+    entries = ledger[-10:]
+    total = len(ledger)
+    scores = [
+        (entry.get('yolo_score'), entry)
+        for entry in ledger
+        if isinstance(entry.get('yolo_score'), (int, float))
+    ]
+    best = max(scores, default=(None, None))
+    worst = min(scores, default=(None, None))
+    lines = [
+        'YOLO LEDGER',
+        f'Picks logged: {total}',
+    ]
+    if best[0] is not None and best[1]:
+        ticker = best[1].get('ticker', 'unknown')
+        lines.append(f'Best score: {best[0]:.2f} ({ticker})')
+    if worst[0] is not None and worst[1]:
+        ticker = worst[1].get('ticker', 'unknown')
+        lines.append(f'Lowest score: {worst[0]:.2f} ({ticker})')
+    lines.append('')
+    lines.append('Recent picks:')
+    for entry in reversed(entries):
+        week = entry.get('week_of', 'unknown')
+        ticker = entry.get('ticker', 'unknown')
+        price = _format_numeric(entry.get('price'))
+        score = _format_numeric(entry.get('yolo_score'))
+        lines.append(f'{week} → {ticker} @ {price} (score {score})')
+    if total > len(entries):
+        lines.append(f'...showing {len(entries)} of {total} picks')
+    return '\n'.join(lines)
+
 def _build_yolo_link_line(ticker: str | None) -> str | None:
     query = _search_query_from_ticker(ticker)
     if not query:
@@ -467,7 +522,7 @@ def _latest_file(directory: Path, pattern: str) -> Path | None:
 
 
 def _build_scan_output(base_dir: Path, since: datetime | None) -> str | None:
-    path = base_dir / 'SetupCandidates.json'
+    path = setup_candidates_path(base_dir)
     if since and path.exists():
         modified_at = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
         if modified_at < since:
@@ -597,7 +652,7 @@ def _ensure_pretrade_ranks(results: list[dict]) -> None:
 
 
 def _build_pretrade_output(base_dir: Path, since: datetime | None) -> str | None:
-    outputs_dir = base_dir / 'outputs'
+    outputs_dir = pretrade_viability_path(base_dir)
     latest = _latest_file(outputs_dir, 'pretrade_viability_*.json')
     if latest is None:
         return None
@@ -686,7 +741,7 @@ def _build_pretrade_output(base_dir: Path, since: datetime | None) -> str | None
 
 
 def _build_mooner_output(base_dir: Path, since: datetime | None) -> str | None:
-    path = base_dir / 'MoonerCallouts.json'
+    path = mooner_output_path(base_dir, 'MoonerCallouts.json')
     if not path.exists():
         return None
     modified_at = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
@@ -714,6 +769,13 @@ def _build_mooner_output(base_dir: Path, since: datetime | None) -> str | None:
     return '\n'.join(lines).strip()
 
 
+def _short_ticker_label(ticker: str | None) -> str:
+    if not ticker:
+        return 'unknown'
+    parts = str(ticker).split('_')
+    return parts[0] if parts else str(ticker)
+
+
 def _build_yolo_output(base_dir: Path, since: datetime | None) -> str | None:
     path = base_dir / 'YOLO_Pick.json'
     if not path.exists():
@@ -724,12 +786,17 @@ def _build_yolo_output(base_dir: Path, since: datetime | None) -> str | None:
     payload = _load_json(path)
     if not isinstance(payload, dict):
         return None
+    week_of = payload.get('week_of', 'unknown')
+    ticker_value = str(payload.get('ticker', 'unknown')).strip()
+    short_label = _short_ticker_label(ticker_value)
+    price = payload.get('price')
+    score = payload.get('yolo_score')
     lines = [
         'YOLO PENNY LOTTERY',
-        f"Week of: {payload.get('week_of', 'unknown')}",
-        f"Ticker: {payload.get('ticker', 'unknown')}",
-        f"Price: {payload.get('price', 'unknown')}",
-        f"Score: {payload.get('yolo_score', 'unknown')}",
+        f"Week of: {_html_escape(week_of)}",
+        f"Ticker: {_html_escape(short_label)} ({_html_escape(ticker_value)})",
+        f"Price: {_html_escape(_format_numeric(price))}",
+        f"Score: {_html_escape(_format_numeric(score))}",
     ]
     stake_value = payload.get('stake_gbp')
     if isinstance(stake_value, (int, float)):
@@ -739,6 +806,9 @@ def _build_yolo_output(base_dir: Path, since: datetime | None) -> str | None:
     lines.extend(['', 'Rationale:'])
     for line in payload.get('rationale', []):
         lines.append(f"- {line}")
+    links_line = _build_yolo_link_line(payload.get('ticker'))
+    if links_line:
+        lines.extend(['', f'Links: {links_line}'])
     return '\n'.join(lines).strip()
 
 
@@ -1034,7 +1104,7 @@ def _state_path_for_command(command_name: str) -> Path | None:
     if command_name == "market_data":
         return BASE_DIR / "state" / "market_data_state.json"
     if command_name == "mooner":
-        return BASE_DIR / "MoonerState.json"
+        return mooner_state_path()
     return None
 
 
@@ -1463,6 +1533,19 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
 
+async def handle_yolo_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger = context.application.bot_data["logger"]
+    authorized_users = context.application.bot_data.get('authorized_users', set())
+    if not user_is_authorized(update, logger, authorized_users):
+        await update.message.reply_text("Unauthorized user.")
+        return
+    message = _format_yolo_history_message(BASE_DIR)
+    try:
+        await update.message.reply_text(message)
+    except Exception as exc:  # noqa: BLE001 - log but don’t crash
+        logger.error("Failed to send YOLO history: %s", exc)
+
+
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger = context.application.bot_data["logger"]
     authorized_users = context.application.bot_data.get('authorized_users', set())
@@ -1517,6 +1600,7 @@ def main() -> None:
     application.add_handler(CommandHandler("market_data", handle_command))
     application.add_handler(CommandHandler("mooner", handle_command))
     application.add_handler(CommandHandler("yolo", handle_command))
+    application.add_handler(CommandHandler("yolo_history", handle_yolo_history))
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
     application.add_handler(MessageHandler(filters.ALL, log_update), group=1)
     application.add_error_handler(handle_error)

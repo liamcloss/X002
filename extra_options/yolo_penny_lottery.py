@@ -16,6 +16,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT_DIR))
 
 from trading_bot.market_data import cache
+from trading_bot.paths import yolo_output_path
 
 YOLO_PICK_FILENAME = "YOLO_Pick.json"
 YOLO_LEDGER_FILENAME = "YOLO_Ledger.json"
@@ -75,8 +76,16 @@ def _week_start(today: date) -> date:
     return today - timedelta(days=today.weekday())
 
 
+def _make_pick_path(base_dir: Path) -> Path:
+    return yolo_output_path(base_dir, YOLO_PICK_FILENAME)
+
+
+def _make_ledger_path(base_dir: Path) -> Path:
+    return yolo_output_path(base_dir, YOLO_LEDGER_FILENAME)
+
+
 def _load_last_pick(base_dir: Path) -> dict | None:
-    path = base_dir / YOLO_PICK_FILENAME
+    path = _make_pick_path(base_dir)
     if not path.exists():
         return None
     try:
@@ -248,12 +257,12 @@ def _last_valid(series: pd.Series) -> float | None:
 
 
 def _write_pick(base_dir: Path, payload: dict) -> None:
-    path = base_dir / YOLO_PICK_FILENAME
+    path = _make_pick_path(base_dir)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def _append_ledger(base_dir: Path, entry: dict) -> None:
-    path = base_dir / YOLO_LEDGER_FILENAME
+    path = _make_ledger_path(base_dir)
     history: list = []
     if path.exists():
         try:

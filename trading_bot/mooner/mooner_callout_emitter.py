@@ -11,6 +11,7 @@ from trading_bot.mooner.mooner_state_engine import (
     MoonerState,
     MoonerStateSnapshot,
 )
+from trading_bot.paths import mooner_output_path
 
 CALLOUTS_FILENAME = "MoonerCallouts.json"
 
@@ -44,5 +45,5 @@ def emit_mooner_callouts(
 
 
 def _write_callouts(base_dir: Path, callouts: Iterable[dict]) -> None:
-    path = base_dir / CALLOUTS_FILENAME
+    path = mooner_output_path(base_dir, CALLOUTS_FILENAME)
     path.write_text(json.dumps(list(callouts), indent=2), encoding="utf-8")

@@ -12,7 +12,7 @@ import pandas as pd
 
 from trading_bot import config
 from trading_bot.market_data import cache
-
+from trading_bot.paths import mooner_output_path
 SUBSET_FILENAME = "MoonerSubset.json"
 
 
@@ -137,5 +137,5 @@ def _write_subset(base_dir: Path, tickers: Iterable[str], as_of: date | None) ->
         "as_of": as_of.isoformat() if as_of else date.today().isoformat(),
         "tickers": list(tickers),
     }
-    path = base_dir / SUBSET_FILENAME
+    path = mooner_output_path(base_dir, SUBSET_FILENAME)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

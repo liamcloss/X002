@@ -39,7 +39,7 @@ def _send_message(
     text: str,
     chat_id: str | None = None,
     escape_markdown: bool = True,
-) -> None:
+) -> bool:
     token = _get_env('TELEGRAM_BOT_TOKEN')
     target_chat_id = chat_id or _get_env('TELEGRAM_CHAT_ID')
     url = f'{_API_BASE}/bot{token}/sendMessage'
@@ -52,34 +52,37 @@ def _send_message(
         'disable_web_page_preview': True,
     }
 
-    response = requests.post(url, json=payload, timeout=30)
+    try:
+        response = requests.post(url, json=payload, timeout=30)
+    except requests.RequestException as exc:
+        logger.error('Telegram request failed: %s', exc)
+        return False
     if not response.ok:
         logger.error(
             'Telegram message failed | status=%s | body=%s',
             response.status_code,
             response.text,
         )
-        raise RuntimeError(
-            f'Telegram API error {response.status_code}: {response.text}'
-        )
+        return False
 
     logger.info('Telegram message sent')
+    return True
 
 
-def send_message(text: str, escape_markdown: bool = True) -> None:
+def send_message(text: str, escape_markdown: bool = True) -> bool:
     """Send a formatted message to Telegram."""
 
-    _send_message(text, escape_markdown=escape_markdown)
+    return _send_message(text, escape_markdown=escape_markdown)
 
 
-def send_paper_message(text: str, escape_markdown: bool = True) -> None:
+def send_paper_message(text: str, escape_markdown: bool = True) -> bool:
     """Send a paper trade message to Telegram."""
 
     chat_id = _get_optional_env('TELEGRAM_PAPER_CHAT_ID')
-    _send_message(text, chat_id=chat_id, escape_markdown=escape_markdown)
+    return _send_message(text, chat_id=chat_id, escape_markdown=escape_markdown)
 
 
-def send_error(text: str, escape_markdown: bool = True) -> None:
+def send_error(text: str, escape_markdown: bool = True) -> bool:
     """Send an error message to Telegram."""
 
-    _send_message(text, escape_markdown=escape_markdown)
+    return _send_message(text, escape_markdown=escape_markdown)

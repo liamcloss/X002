@@ -12,9 +12,9 @@ import pandas as pd
 
 from trading_bot import config
 from trading_bot.market_data import cache
+from trading_bot.paths import mooner_output_path
 from trading_bot.universe.active import ensure_active_column
 
-CANDIDATE_POOL_FILENAME = "MoonerCandidatePool.json"
 FX_TO_GBP = {
     "USD": 0.8,
     "GBP": 1.0,
@@ -173,7 +173,7 @@ def _write_candidate_pool(base_dir: Path, tickers: Iterable[str], as_of: date | 
         "as_of": as_of.isoformat() if as_of else date.today().isoformat(),
         "tickers": sorted(set(tickers)),
     }
-    path = base_dir / CANDIDATE_POOL_FILENAME
+    path = mooner_output_path(base_dir, CANDIDATE_POOL_FILENAME)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 

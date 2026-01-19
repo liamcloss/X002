@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable
 
-
+from trading_bot.paths import setup_candidates_path
 def build_setup_candidates_payload(
     candidates: Iterable[dict[str, Any]],
     *,
@@ -61,7 +61,7 @@ def write_setup_candidates(
         data_as_of=data_as_of,
         generated_at=generated_at,
     )
-    path = base_dir / 'SetupCandidates.json'
+    path = setup_candidates_path(base_dir)
     path.write_text(json.dumps(payload, indent=2), encoding='utf-8')
     return path
 

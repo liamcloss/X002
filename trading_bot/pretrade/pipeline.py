@@ -12,6 +12,7 @@ from urllib.parse import quote
 from src.market_data import yfinance_client
 from trading_bot.execution.open_trades import get_live_open_trade_count
 from trading_bot.mooner import load_mooner_states
+from trading_bot.paths import pretrade_viability_path, setup_candidates_path
 from trading_bot.run_state import finish_run, start_run
 from trading_bot.symbols import tradingview_symbol, yfinance_symbol
 from trading_bot.pretrade.notifier import build_pretrade_messages, send_pretrade_messages
@@ -193,6 +194,7 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
 
 def _find_latest_setup_file(base_dir: Path, logger: logging.Logger) -> Path | None:
     candidates = [
+        setup_candidates_path(base_dir),
         base_dir / SETUP_FILENAME,
         base_dir / 'outputs' / SETUP_FILENAME,
         base_dir / 'data' / SETUP_FILENAME,
@@ -416,10 +418,8 @@ def _write_results(
     timestamp: datetime,
     logger: logging.Logger,
 ) -> None:
-    outputs_dir = base_dir / 'outputs'
-    outputs_dir.mkdir(parents=True, exist_ok=True)
     filename = f'pretrade_viability_{timestamp.strftime("%Y%m%d_%H%M%S")}.json'
-    path = outputs_dir / filename
+    path = pretrade_viability_path(base_dir, filename)
     try:
         path.write_text(json.dumps(results, indent=2), encoding='utf-8')
     except OSError as exc:

@@ -10,6 +10,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from trading_bot import config
+from trading_bot.paths import pretrade_spread_path
 from trading_bot.symbols import t212_market_code
 
 SPREAD_SAMPLE_FILE = 'spread_samples.json'
@@ -130,10 +131,8 @@ def _write_report(
     checked_at: datetime,
     logger: logging.Logger,
 ) -> Path:
-    outputs_dir = base_dir / 'outputs'
-    outputs_dir.mkdir(parents=True, exist_ok=True)
     filename = f'{REPORT_PREFIX}{checked_at.strftime("%Y%m%d_%H%M%S")}.json'
-    path = outputs_dir / filename
+    path = pretrade_spread_path(base_dir, filename)
     try:
         path.write_text(json.dumps(report, indent=2), encoding='utf-8')
     except OSError as exc:

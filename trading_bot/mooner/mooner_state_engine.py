@@ -14,8 +14,7 @@ import pandas as pd
 
 from trading_bot import config
 from trading_bot.market_data import cache
-
-STATE_FILENAME = "MoonerState.json"
+from trading_bot.paths import mooner_state_path
 
 
 class MoonerState(str, Enum):
@@ -295,7 +294,7 @@ def _nth_last_valid(series: pd.Series, n: int) -> float | None:
 
 
 def _load_states(base_dir: Path) -> dict[str, dict[str, str]]:
-    path = base_dir / STATE_FILENAME
+    path = mooner_state_path(base_dir)
     if not path.exists():
         return {}
     try:
@@ -312,6 +311,5 @@ def _load_states(base_dir: Path) -> dict[str, dict[str, str]]:
 
 
 def _write_states(base_dir: Path, states: dict[str, dict[str, str]]) -> None:
-    path = base_dir / STATE_FILENAME
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = mooner_state_path(base_dir)
     path.write_text(json.dumps(states, indent=2), encoding="utf-8")
