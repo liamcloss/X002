@@ -80,7 +80,7 @@ def write_spread_report(
             continue
         samples_by_symbol.setdefault(symbol, []).append(sample)
 
-    cutoff = checked_at - timedelta(days=config.SPREAD_SAMPLE_LOOKBACK_DAYS)
+    cutoff = checked_at - timedelta(days=config.CONFIG["spread_sampling"]["lookback_days"])
     samples_by_symbol = _prune_samples(samples_by_symbol, cutoff)
 
     _save_state(
@@ -100,8 +100,8 @@ def _build_report(samples_by_symbol: dict[str, list[dict[str, Any]]], checked_at
     report: dict[str, Any] = {
         'generated_at': _ensure_utc(checked_at).isoformat(),
         'source': 'yfinance',
-        'lookback_days': config.SPREAD_SAMPLE_LOOKBACK_DAYS,
-        'open_cooldown_minutes': config.SPREAD_SAMPLE_OPEN_COOLDOWN_MINUTES,
+        'lookback_days': config.CONFIG["spread_sampling"]["lookback_days"],
+        'open_cooldown_minutes': config.CONFIG["spread_sampling"]["open_cooldown_minutes"],
         'symbols': {},
     }
 
@@ -225,7 +225,7 @@ def _is_in_open_cooldown(market_code: str | None, checked_at: datetime) -> bool:
     open_dt = datetime.combine(local_time.date(), open_time, tzinfo=zone)
     if local_time < open_dt:
         return True
-    return local_time < (open_dt + timedelta(minutes=config.SPREAD_SAMPLE_OPEN_COOLDOWN_MINUTES))
+    return local_time < (open_dt + timedelta(minutes=config.CONFIG["spread_sampling"]["open_cooldown_minutes"]))
 
 
 def _ensure_utc(value: datetime) -> datetime:

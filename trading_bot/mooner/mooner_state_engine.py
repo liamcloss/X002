@@ -169,9 +169,10 @@ def _is_firing(
         return False
     if price <= high30:
         return False
-    if volume_latest < config.MOONER_STATE_VOLUME_MULTIPLIER * avg_volume_30:
+    mooner_config = config.CONFIG["mooner"]
+    if volume_latest < mooner_config["state_volume_multiplier"] * avg_volume_30:
         return False
-    return _is_atr_rising(atr20, days=config.MOONER_STATE_ATR_RISE_DAYS)
+    return _is_atr_rising(atr20, days=mooner_config["state_atr_rise_days"])
 
 
 def _is_armed(

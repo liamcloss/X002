@@ -75,7 +75,7 @@ def _apply_rules(
     real_rr: float,
     open_trades_count: int,
 ) -> tuple[str, str | None]:
-    max_spread_pct = config.MAX_SPREAD_PCT * 100
+    max_spread_pct = config.CONFIG["max_spread_pct"] * 100
     if spread_pct > max_spread_pct:
         return 'REJECTED', _format_spread_reason(spread_pct)
     if price_drift_pct > 1.0:
@@ -134,7 +134,7 @@ def _reject_result(
 
 
 def _format_spread_reason(spread_pct: float) -> str:
-    max_spread_pct = config.MAX_SPREAD_PCT * 100
+    max_spread_pct = config.CONFIG["max_spread_pct"] * 100
     return f'Spread too wide ({_fmt(spread_pct)}% > {max_spread_pct:.2f}%)'
 
 

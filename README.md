@@ -49,6 +49,7 @@ Configuration is split between code constants and environment variables.
 - **Mode**: update `MODE` in `trading_bot/config.py` to `TEST` or `LIVE`.
 - **Storage**: the CLI will auto-create these folders in the repo root if they don't exist: `data/`, `logs/`, `outputs/`, `state/`, `universe/`.
 - **Pre-trade settings**: adjust `MAX_SPREAD_PCT`, `PRETRADE_CANDIDATE_LIMIT`, `SPREAD_SAMPLE_LOOKBACK_DAYS`, and `SPREAD_SAMPLE_OPEN_COOLDOWN_MINUTES` in `trading_bot/config.py` to tune risk gates and reporting.
+- **Daily scan display**: adjust `daily_scan_display_limit` in `config.yaml` to control how many ideas the Telegram scan summary includes (default 10); pre-trade still evaluates the top `PRETRADE_CANDIDATE_LIMIT` setups.
 - **Mooner settings**: adjust `MOONER_SUBSET_MAX`, `MOONER_CANDIDATE_VOLUME_THRESHOLD`, `MOONER_CANDIDATE_DOLLAR_VOLUME_GBP`, `MOONER_RESISTANCE_BUFFER`, and the ATR/drawdown thresholds in `trading_bot/config.py` to tweak how regimes are discovered and filtered.
 
 If you run into errors about missing variables or misconfigured mode, double-check the `.env` file and `MODE` value.
@@ -90,7 +91,10 @@ python main.py scan --dry-run
 python main.py scan
 python main.py universe
 python main.py pretrade
+python main.py status
+python main.py status --verbose
 python main.py mooner
+python main.py news-scout
 python main.py yolo
 python main.py replay --days 90
 python main.py replay --start-date 2023-01-01 --days 60
@@ -101,8 +105,10 @@ python main.py replay --start-date 2023-01-01 --days 60
 - `scan`: Runs the daily market scan. Use `--dry-run` to avoid messaging/state writes.
 - `universe`: Refreshes the Trading212 instrument universe.
 - `pretrade`: Evaluates yesterday's setup candidates against live quote rules, prints a console table, writes JSON outputs, and sends one consolidated Telegram summary.
+- `status`: Prints the Speculation Edge health summary. The default summary splits command statuses into their own lines for readability, while `--verbose` includes directory paths, lock information, and file timestamps.
 - `mooner`: Executes the Mooner regime sidecar and records any `FIRING` callouts for follow-up.
-- `yolo`: Runs the weekly penny-stock lottery that logs a £2 suggestion for the riskiest qualified ticker.
+- `news-scout`: Builds the curated link-focused report for the latest setups, storing a JSON snapshot and optionally enriching entries with AI insights (see notes below).
+- `yolo`: Runs the weekly penny-stock lottery (idempotent once per week) and prints the latest winner plus the stored alternative contenders so you can spot recurring picks and backup options.
 - `replay`: Replays historical data for backtesting. Supports `--days` and `--start-date`.
 
 ## Pre-trade viability
@@ -177,7 +183,9 @@ The sidecar runs before the nightly scan, keeps its JSON artifacts under the rep
 
 ## Penny Stock YOLO Lottery
 
-- Standalone weekly pencil: `trading_bot/yolo_penny_lottery.py` reads the universe, applies the fixed penny filters, ranks by the YOLO score, and writes the week’s draw to `YOLO_Pick.json` while appending to `YOLO_Ledger.json`.
+- Standalone weekly lottery: `extra_options/yolo_penny_lottery.py` reads the universe, applies the fixed penny filters, ranks by the YOLO score, and writes the week’s draw to `YOLO_Pick.json` while appending to `YOLO_Ledger.json`.
+- Running `python main.py yolo` now executes the lottery (respecting the weekly lock) and prints the stored winner plus its derived alternatives so you can see other high-scoring YOLO candidates and whether the same ticker has been drawn before.
+- `YOLO_Pick.json` now includes an `alternatives` array so the summary can report runner-up suggestions and their rationale, while `YOLO_Ledger.json` tracks every logged draw for easy repeat detection.
 - It runs once per week (based on Monday) and always suggests a £2 stake; if the module is missing or fails, everything else keeps working exactly the same.
 - No interaction with the scanner, Mooner, or pretrade flows—its only outputs are the two JSON artifacts, so you can disable or remove it without affecting the rest of the system.
 
@@ -190,3 +198,12 @@ The sidecar runs before the nightly scan, keeps its JSON artifacts under the rep
 - **All pre-trade setups rejected**: After market close, yfinance often has no bid/ask, so the spread gate rejects. Run pretrade during market hours or review the spread report for realistic caps.
 - **Ticker missing in yfinance**: Confirm the Trading212 symbol maps correctly to Yahoo via `trading_bot/symbols.py` and that `display_ticker` is present in `SetupCandidates.json`.
 - **Instrument missing from scans**: Check the `active` flag in `universe/clean/universe.parquet` and the auto-deactivation notes above.
+
+## AI / News Scout Notes
+
+- **Current scope**: `news_scout` collects the freshest setups, builds quick links (TradingView, Google News, Reddit, X, Threads), and publishes them as an optional Telegram report. It purposefully stops short of editorial claims such as “pump-and-dump.” Each `news_scout` run now tags the JSON snapshot and CLI summary with an `llm_insight` string whenever the AI hook contributes a sentiment note.
+- **Optional AI insights**: Enable the built-in LLM by setting `news_scout.llm_enabled` to `true` in `config.yaml` and pointing `api_key_env` at the environment variable that stores your OpenAI key (defaults to `OPENAI_API_KEY`). The feature is gated and safe to disable by leaving the flag off or omitting the env var. When enabled, the logger records entries like `News scout LLM enrichment requested (model=..., entries=...)`, `News scout LLM call starting (model=...)`, and (if insight data is emitted) `News scout LLM applied insights to X entries: SYMBOLS...` so you can audit every invocation in `logs/<date>.log`. Each insight is surfaced as an `AI:` line in the CLI summary and persists in the JSON snapshot.
+- **Next steps for news scout**: Consider augmenting outputs with:
+  1. Structured headline metadata (source, timestamp, tone score).
+  2. Local sentiment indicators (e.g., Vader) so we can flag “positive/neutral/negative” without external calls.
+  3. Keywords or volume anomalies that escalate a candidate into a “high-interest” bucket for Telegram.

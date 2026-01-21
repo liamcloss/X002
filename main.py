@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from extra_options.yolo_penny_lottery import run_yolo_penny_lottery
 from trading_bot.config import load_secrets, validate_mode
 from trading_bot.constants import RunType
 from trading_bot.logging_setup import setup_logging
 from trading_bot.backtest.replay import run_replay
 from trading_bot.pipeline.daily_scan import run_daily_scan
+from trading_bot.yolo import format_yolo_summary, load_yolo_summary
 from trading_bot.universe.refresh_universe import run_universe_refresh
 from trading_bot.pretrade.pipeline import run_pretrade
 from trading_bot.mooner import format_mooner_callout_lines, run_mooner_sidecar
@@ -48,7 +50,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("universe", help="Refresh trading universe")
     subparsers.add_parser("pretrade", help="Run pre-trade viability check")
-    subparsers.add_parser("status", help="Show system status")
+    subparsers.add_parser("yolo", help="Run the weekly YOLO lottery and summarize the pick")
+    status_parser = subparsers.add_parser("status", help="Show system status")
+    status_parser.add_argument("--verbose", action="store_true", help="Emit full status report")
     subparsers.add_parser("mooner", help="Run the Mooner regime sidecar")
     subparsers.add_parser("news-scout", help="Produce the news scout summary")
 
@@ -98,6 +102,21 @@ def _handle_mooner(logger, base_dir: Path) -> None:
     _print_mooner_callouts(callouts)
 
 
+def _handle_yolo(logger, base_dir: Path) -> None:
+    logger.info('YOLO lottery requested')
+    try:
+        run_yolo_penny_lottery(base_dir, logger)
+    except Exception as exc:
+        logger.exception('YOLO lottery failed: %s', exc)
+        print(f"YOLO lottery failed: {exc}")
+    summary = load_yolo_summary(base_dir)
+    if summary is None:
+        print('YOLO lottery has no recorded pick yet.')
+        return
+    for line in format_yolo_summary(summary):
+        print(line)
+
+
 def _handle_news_scout(logger, base_dir: Path) -> None:
     logger.info('News scout sidecar starting')
     entries = run_news_scout(base_dir, logger)
@@ -122,6 +141,9 @@ def _print_news_scout_summary(entries: list[dict]) -> None:
         reason = entry.get('reason')
         if reason:
             print(f'  Setup: {reason}')
+        llm_insight = entry.get('llm_insight')
+        if llm_insight:
+            print(f'  AI: {llm_insight}')
         links = entry.get('links') or []
         if links:
             formatted = ' | '.join(
@@ -141,9 +163,9 @@ def _print_mooner_callouts(callouts: list[dict]) -> None:
         print(f'- {line}')
 
 
-def _handle_status(logger) -> None:
+def _handle_status(logger, base_dir: Path, verbose: bool) -> None:
     logger.info('Status report requested')
-    run_status(Path(__file__).resolve().parent, logger=logger)
+    run_status(base_dir, logger=logger, verbose=verbose)
 
 
 def main() -> int:
@@ -168,7 +190,9 @@ def main() -> int:
     elif args.command == RunType.MOONER.value.lower():
         _handle_mooner(logger, base_dir)
     elif args.command == RunType.STATUS.value.lower():
-        _handle_status(logger)
+        _handle_status(logger, base_dir, verbose=args.verbose)
+    elif args.command == RunType.YOLO.value.lower():
+        _handle_yolo(logger, base_dir)
     elif args.command in {RunType.NEWS_SCOUT.value.lower(), "news-scout"}:
         _handle_news_scout(logger, base_dir)
     else:

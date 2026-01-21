@@ -11,6 +11,7 @@ from urllib.parse import quote
 import pandas as pd
 
 from trading_bot import config
+from trading_bot.config import DAILY_SCAN_DISPLAY_LIMIT
 from trading_bot.constants import Mode
 from trading_bot.market_data import cache
 from trading_bot.messaging import (
@@ -38,7 +39,7 @@ from trading_bot.state import (
     save_state,
 )
 
-MAX_CANDIDATES = 5
+MAX_CANDIDATES = max(1, DAILY_SCAN_DISPLAY_LIMIT)
 
 CURRENCY_SYMBOLS = {
     'USD': '$',
@@ -150,7 +151,7 @@ def run_daily_scan(dry_run: bool, logger: logging.Logger | None = None) -> None:
             momentum_5d=momentum_5d,
             geometry=geometry,
             reason=reason,
-            mode=config.MODE,
+            mode=config.CONFIG["mode"],
         )
         candidates.append(candidate)
 
@@ -172,7 +173,7 @@ def run_daily_scan(dry_run: bool, logger: logging.Logger | None = None) -> None:
         logger.warning("Mooner sidecar failed: %s", exc, exc_info=True)
     message = format_daily_scan_message(
         date=datetime.now().strftime('%Y-%m-%d'),
-        mode=config.MODE,
+        mode=config.CONFIG["mode"],
         candidates=delivered,
         scanned_count=scanned_count,
         valid_count=valid_count,
@@ -190,7 +191,7 @@ def run_daily_scan(dry_run: bool, logger: logging.Logger | None = None) -> None:
         write_setup_candidates(
             base_dir,
             setup_candidates,
-            mode=config.MODE,
+            mode=config.CONFIG["mode"],
             data_as_of=_format_data_as_of(data_as_of),
             generated_at=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
         )
@@ -287,7 +288,7 @@ def _rank_candidates(
 
 
 def _pretrade_candidate_limit() -> int:
-    limit = getattr(config, 'PRETRADE_CANDIDATE_LIMIT', MAX_CANDIDATES)
+    limit = config.CONFIG.get("pretrade_candidate_limit", MAX_CANDIDATES)
     try:
         limit_value = int(limit)
     except (TypeError, ValueError):
@@ -343,10 +344,18 @@ def _build_candidate_payload(
 
 def _position_size(stop_pct: float, mode: str) -> float:
     if mode == Mode.LIVE.value:
-        size_by_risk = config.LIVE_MODE_MAX_RISK / stop_pct if stop_pct else config.LIVE_MODE_POSITION_MIN
-        size = min(config.LIVE_MODE_POSITION_MAX, max(config.LIVE_MODE_POSITION_MIN, size_by_risk))
+        live_mode_config = config.CONFIG["live_mode"]
+        size_by_risk = (
+            live_mode_config["max_risk"] / stop_pct
+            if stop_pct
+            else live_mode_config["position_min"]
+        )
+        size = min(
+            live_mode_config["position_max"],
+            max(live_mode_config["position_min"], size_by_risk),
+        )
         return float(size)
-    return float(config.TEST_MODE_POSITION_SIZE)
+    return float(config.CONFIG["test_mode"]["position_size"])
 
 
 def _infer_isa_eligible(currency_code: str, instrument_type: str) -> bool:

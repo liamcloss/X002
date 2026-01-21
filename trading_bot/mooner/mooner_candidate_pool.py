@@ -97,10 +97,11 @@ def _qualifies_candidate(df: pd.DataFrame, currency_code: str) -> bool:
     if not pd.notna(avg_volume_60) or not pd.notna(avg_price_60):
         return False
 
+    mooner_config = config.CONFIG["mooner"]
     liquidity_ok = (
-        avg_volume_60 >= config.MOONER_CANDIDATE_VOLUME_THRESHOLD
+        avg_volume_60 >= mooner_config["candidate_volume_threshold"]
         and _to_gbp(avg_volume_60 * avg_price_60, currency_code)
-        >= config.MOONER_CANDIDATE_DOLLAR_VOLUME_GBP
+        >= mooner_config["candidate_dollar_volume_gbp"]
     )
 
     atr20 = _compute_atr(df, 20)
@@ -110,14 +111,21 @@ def _qualifies_candidate(df: pd.DataFrame, currency_code: str) -> bool:
     atr_high_enough = False
     compression = False
     if atr20_latest and atr60_latest:
-        atr_high_enough = _percentile(atr20.tail(252), atr20_latest) >= config.MOONER_ATR_PERCENTILE
-        compression = atr20_latest <= config.MOONER_ATR_COMPRESSION_RATIO * atr60_latest
+        atr_high_enough = (
+            _percentile(atr20.tail(252), atr20_latest) >= mooner_config["atr_percentile"]
+        )
+        compression = (
+            atr20_latest <= mooner_config["atr_compression_ratio"] * atr60_latest
+        )
 
     avg_volume_30 = volume.tail(30).mean()
     volume_last = volume.iloc[-1]
     surge = False
     if pd.notna(avg_volume_30) and avg_volume_30 > 0 and pd.notna(volume_last):
-        surge = volume_last >= config.MOONER_CANDIDATE_SURGE_MULTIPLIER * avg_volume_30
+        surge = (
+            volume_last
+            >= mooner_config["candidate_surge_multiplier"] * avg_volume_30
+        )
 
     return liquidity_ok or atr_high_enough or compression or surge
 

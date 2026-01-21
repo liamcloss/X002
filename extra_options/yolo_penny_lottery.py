@@ -8,7 +8,7 @@ import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import List
+from typing import Any, List
 
 import pandas as pd
 
@@ -29,6 +29,7 @@ RISK_INTRADAY_RANGE = 0.5
 RISK_HIGH_VOLUME_SPIKE = 25.0
 RISK_LOW_ATR_RATIO = 0.08
 RISK_MICRO_PRICE = 0.5
+ALTERNATIVE_CANDIDATE_COUNT = 3
 
 
 @dataclass(frozen=True)
@@ -61,7 +62,12 @@ def run_yolo_penny_lottery(base_dir: Path | None = None, logger: logging.Logger 
         logger.warning("No YOLO candidates found for week %s.", week_of)
         return None
 
-    best = sorted(candidates, key=lambda item: item.score, reverse=True)[0]
+    ranked = sorted(candidates, key=lambda item: item.score, reverse=True)
+    best = ranked[0]
+    alternatives = [
+        _serialize_candidate(candidate)
+        for candidate in ranked[1 : 1 + ALTERNATIVE_CANDIDATE_COUNT]
+    ]
     risk_reasons = _assess_pick_risk(best)
     if risk_reasons:
         blocked_payload = _build_blocked_payload(best, week_of, risk_reasons)
@@ -81,6 +87,7 @@ def run_yolo_penny_lottery(base_dir: Path | None = None, logger: logging.Logger 
         "rationale": best.rationale,
         "stake_gbp": 2.00,
         "intent": "LOTTERY_TICKET",
+        "alternatives": alternatives,
     }
     _write_pick(root, payload)
     _append_ledger(root, payload)
@@ -344,6 +351,15 @@ def _assess_pick_risk(candidate: CandidateMetrics) -> list[str]:
     if candidate.volume_spike_ratio >= RISK_HIGH_VOLUME_SPIKE and candidate.max_close_move >= 1.5:
         reasons.append("Explosive spike coupled with outsized close move")
     return list(dict.fromkeys(reasons))
+
+
+def _serialize_candidate(candidate: CandidateMetrics) -> dict[str, Any]:
+    return {
+        "ticker": candidate.ticker,
+        "price": round(candidate.close, 4),
+        "yolo_score": round(candidate.score, 4),
+        "rationale": candidate.rationale,
+    }
 
 
 if __name__ == "__main__":

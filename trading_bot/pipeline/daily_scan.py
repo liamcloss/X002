@@ -189,7 +189,7 @@ def _run_pipeline(dry_run: bool, logger: logging.Logger) -> bool:
         logger.warning("Mooner sidecar failed: %s", exc, exc_info=True)
     message = format_daily_scan_message(
         date=today_str,
-        mode=config.MODE,
+        mode=config.CONFIG["mode"],
         candidates=alert_candidates,
         scanned_count=len(ticker_map),
         valid_count=ranked_count,
@@ -210,7 +210,7 @@ def _run_pipeline(dry_run: bool, logger: logging.Logger) -> bool:
         write_setup_candidates(
             base_dir,
             setup_candidates,
-            mode=config.MODE,
+            mode=config.CONFIG["mode"],
             data_as_of=data_as_of_str,
             generated_at=generated_at_utc,
         )
@@ -259,9 +259,9 @@ def _refresh_market_data_if_needed(base_dir: Path, logger: logging.Logger) -> bo
         )
         return False
 
-    mode = str(getattr(config, 'SCAN_REFRESH_MODE', 'always')).lower()
+    mode = str(config.CONFIG["scan_refresh_mode"]).lower()
     max_age_hours = _safe_float(
-        getattr(config, 'MARKET_DATA_REFRESH_MAX_AGE_HOURS', 24.0),
+        config.CONFIG["market_data_refresh_max_age_hours"],
         default=24.0,
     )
     if max_age_hours <= 0:
@@ -448,7 +448,7 @@ def _rank_and_build_candidates(
 
 
 def _pretrade_candidate_limit() -> int:
-    limit = getattr(config, 'PRETRADE_CANDIDATE_LIMIT', ALERT_CANDIDATE_LIMIT)
+    limit = config.CONFIG.get("pretrade_candidate_limit", ALERT_CANDIDATE_LIMIT)
     try:
         limit_value = int(limit)
     except (TypeError, ValueError):
@@ -500,12 +500,15 @@ def _build_candidate(
 
 
 def _position_size_for_risk(stop_pct: float) -> int:
-    if config.MODE == "TEST":
-        return int(config.TEST_MODE_POSITION_SIZE)
+    if config.CONFIG["mode"] == "TEST":
+        return int(config.CONFIG["test_mode"]["position_size"])
     if stop_pct <= 0:
-        return int(config.LIVE_MODE_POSITION_MIN)
-    target_size = config.LIVE_MODE_MAX_RISK / stop_pct
-    bounded = max(config.LIVE_MODE_POSITION_MIN, min(config.LIVE_MODE_POSITION_MAX, target_size))
+        return int(config.CONFIG["live_mode"]["position_min"])
+    target_size = config.CONFIG["live_mode"]["max_risk"] / stop_pct
+    bounded = max(
+        config.CONFIG["live_mode"]["position_min"],
+        min(config.CONFIG["live_mode"]["position_max"], target_size),
+    )
     return int(round(bounded))
 
 

@@ -17,6 +17,7 @@ class RunType(str, Enum):
     PRETRADE = "PRETRADE"
     STATUS = "STATUS"
     MOONER = "MOONER"
+    YOLO = "YOLO"
     NEWS_SCOUT = "NEWS_SCOUT"
 
 

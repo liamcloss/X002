@@ -12,7 +12,7 @@ from urllib.parse import quote
 
 import pandas as pd
 
-from trading_bot.config import LIVE_MODE_MAX_RISK, LIVE_MODE_POSITION_MAX, LIVE_MODE_POSITION_MIN
+from trading_bot import config
 from trading_bot.logging_setup import setup_logging
 from trading_bot.market_data import cache
 from trading_bot.messaging.format_message import format_daily_scan_message
@@ -425,10 +425,14 @@ def _build_candidate(
 
 
 def _position_size_for_risk(stop_pct: float) -> int:
+    live_mode_config = config.CONFIG["live_mode"]
     if stop_pct <= 0:
-        return int(LIVE_MODE_POSITION_MIN)
-    target_size = LIVE_MODE_MAX_RISK / stop_pct
-    bounded = max(LIVE_MODE_POSITION_MIN, min(LIVE_MODE_POSITION_MAX, target_size))
+        return int(live_mode_config["position_min"])
+    target_size = live_mode_config["max_risk"] / stop_pct
+    bounded = max(
+        live_mode_config["position_min"],
+        min(live_mode_config["position_max"], target_size),
+    )
     return int(round(bounded))
 
 
@@ -455,7 +459,7 @@ def _format_replay_message(
     date_str = replay_date.isoformat()
     message = format_daily_scan_message(
         date=date_str,
-        mode="LIVE",
+        mode=config.CONFIG["mode"],
         candidates=candidates,
         scanned_count=diagnostics.scanned,
         valid_count=diagnostics.final_ranked,
@@ -468,7 +472,7 @@ def _format_replay_message(
     if lines:
         lines[0] = lines[0].replace("📊 Trade Candidates", "📊 REPLAY – Trade Candidates")
     if len(lines) > 1:
-        lines[1] = "MODE: LIVE (Replay)"
+        lines[1] = f"MODE: {config.CONFIG['mode']} (Replay)"
 
     lines.append("")
     lines.append("--- Diagnostics ---")

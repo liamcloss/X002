@@ -38,7 +38,7 @@ def rank_mooner_subset(base_dir: Path, universe: Iterable[str], logger: logging.
         scored.append((atr_ratio, -rel_strength, structure_penalty, ticker))
 
     scored.sort()
-    subset_limit = max(1, int(config.MOONER_SUBSET_MAX))
+    subset_limit = max(1, int(config.CONFIG["mooner"]["subset_max"]))
     subset = [ticker for *_ignored, ticker in scored[:subset_limit]]
     _write_subset(base_dir, subset, as_of_date)
     logger.info("Mooner subset ranked (%s tickers).", len(subset))
@@ -61,7 +61,9 @@ def _score_ticker(df: pd.DataFrame) -> tuple[float, float, int] | None:
         return None
     atr_ratio = atr20_latest / max(atr60_latest, 1e-9)
 
-    rel_strength = _relative_strength(close, config.MOONER_REL_STRENGTH_LOOKBACK)
+    rel_strength = _relative_strength(
+        close, config.CONFIG["mooner"]["rel_strength_lookback"]
+    )
     structure_penalty = _structure_penalty(close)
 
     return atr_ratio, rel_strength, structure_penalty

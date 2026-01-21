@@ -68,17 +68,21 @@ COMMAND_HELP = {
     "scan": "Run the scan pipeline.",
     "universe": "Refresh the trading universe.",
     "pretrade": "Run pretrade checks.",
-    "status": "Show system status.",
+    "status": "Show system status (append 'verbose' for full output).",
     "market_data": "Refresh the market data cache.",
     "mooner": "Run the Mooner sidecar regime watch.",
     "yolo": "Run the penny stock YOLO lottery.",
     "yolo_history": "Display the YOLO ledger history.",
     "news_scout": "Run the news scout summary (alias /news-scout).",
+    "rocket": "Alias for /mooner (🚀).",
+    "🚀": "Alias for /mooner.",
     "help": "Show this help message.",
 }
 
 COMMAND_ALIASES = {
     "news-scout": "news_scout",
+    "rocket": "mooner",
+    "🚀": "mooner",
 }
 
 LOG_PATH = BASE_DIR / 'logs' / 'telegram_command_client.log'
@@ -863,6 +867,17 @@ def _format_link_badges(links: list[dict[str, str]]) -> str:
     return ' | '.join(badges)
 
 
+def _format_news_scout_links(links: list[dict[str, str]]) -> str:
+    badges: list[str] = []
+    for link in links:
+        url = link.get('url')
+        label = link.get('label') or 'LINK'
+        if not url:
+            continue
+        badges.append(f'{_html_escape(label)}: {_html_escape(url)}')
+    return ' | '.join(badges)
+
+
 def _build_news_scout_output(base_dir: Path, since: datetime | None) -> str | None:
     directory = news_scout_output_path(base_dir)
     latest = _latest_file(directory, 'news_scout_*.json')
@@ -899,12 +914,15 @@ def _build_news_scout_output(base_dir: Path, since: datetime | None) -> str | No
         reason = str(entry.get('reason') or '').strip()
         if reason:
             lines.append(f'   Setup: {_html_escape(reason)}')
-        link_badges = _format_link_badges(entry.get('links') or [])
-        if link_badges:
-            lines.append(f'   Links: {link_badges}')
-        if display:
-            lines.append(f'   Display ticker: {_html_escape(display)}')
-        lines.append('')
+          link_line = _format_news_scout_links(entry.get('links') or [])
+          if link_line:
+              lines.append(f'   Links: {link_line}')
+          insight = entry.get('llm_insight')
+          if insight:
+              lines.append(f'   AI: {_html_escape(insight)}')
+          if display:
+              lines.append(f'   Display ticker: {_html_escape(display)}')
+          lines.append('')
     return '\n'.join(lines).strip()
 
 
@@ -1586,7 +1604,12 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Unauthorized user.")
         return
 
-    command_name = (update.message.text or "").lstrip("/").split()[0]
+    text = (update.message.text or "").lstrip("/")
+    parts = text.split()
+    if not parts:
+        await update.message.reply_text("Please specify a command.")
+        return
+    command_name = parts[0]
     command_name = COMMAND_ALIASES.get(command_name, command_name)
     command = COMMAND_MAP.get(command_name)
     if not command:
@@ -1602,7 +1625,10 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     running_jobs = context.application.bot_data["running_jobs"]
     running_lock = context.application.bot_data["running_jobs_lock"]
 
-    job = _build_job(command_name, command, update)
+    command_args = list(command)
+    if command_name == 'status' and len(parts) > 1 and parts[1].lower() == 'verbose':
+        command_args.append('--verbose')
+    job = _build_job(command_name, command_args, update)
     lock_conflicts = _find_lock_conflicts(job.groups)
     conflicts: list[RunningJob]
     async with running_lock:

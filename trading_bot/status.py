@@ -27,17 +27,63 @@ REQUIRED_DIRS = (
 )
 
 
-def run_status(base_dir: Path, logger: logging.Logger | None = None) -> None:
+def run_status(base_dir: Path, logger: logging.Logger | None = None, verbose: bool = False) -> None:
     logger = logger or logging.getLogger('trading_bot')
     status = _collect_status(base_dir, logger)
-    print(_format_status(status))
+    formatter = _format_status_verbose if verbose else _format_status_summary
+    print(formatter(status))
+
+
+def _format_status_summary(status: dict[str, Any]) -> str:
+    timestamp = _format_timestamp(status.get("timestamp"))
+    mode = status.get("mode", "unknown")
+    directories = status.get("dirs", {})
+    total_dirs = len(directories)
+    ok_dirs = sum(1 for exists in directories.values() if exists)
+    dir_summary = _directory_summary(ok_dirs, total_dirs)
+
+    market_state = status.get('market_data_state', {})
+    market_lock = status.get('market_data_lock', {})
+    market_status = _market_status_summary(market_state, market_lock)
+
+    command_entries = _command_summary_entries(status)
+
+    pretrade_file = status.get('latest_pretrade')
+    pretrade_icon = _artifact_icon(bool(pretrade_file))
+    spread_file = status.get('latest_spread_report')
+    spread_icon = _artifact_icon(bool(spread_file))
+
+    spread_samples = status.get('spread_samples', {})
+    lookback_days = spread_samples.get('lookback_days') or _spread_sampling_lookback()
+
+    open_trades = status.get('open_trades', {})
+    live_open = open_trades.get('live')
+    paper_open = open_trades.get('paper')
+
+    lines = [
+        'SPECULATION EDGE STATUS (SUMMARY)',
+        f'🕒 {timestamp} | ⚙️ Mode: {mode}',
+        dir_summary,
+        f'Market data: {market_status}',
+    ]
+    if command_entries:
+        lines.append('Commands:')
+        lines.extend(f'  {entry}' for entry in command_entries)
+    lines.extend(
+        [
+            _format_open_trades(live_open, paper_open),
+            f'Latest pretrade: {pretrade_icon} | Latest spread: {spread_icon}',
+            f'📊 Spread samples: {spread_samples.get("count", 0)} (lookback {lookback_days}d)',
+        ]
+    )
+    return '\n'.join(lines)
 
 
 def _collect_status(base_dir: Path, logger: logging.Logger) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     status: dict[str, Any] = {
         'timestamp': now.isoformat(),
-        'mode': config.MODE,
+        'mode': config.CONFIG["mode"] or config.CONFIG.get('mode', 'unknown'),
         'dirs': {name: (base_dir / name).exists() for name in REQUIRED_DIRS},
     }
 
@@ -89,17 +135,16 @@ def _collect_status(base_dir: Path, logger: logging.Logger) -> dict[str, Any]:
     return status
 
 
-def _format_status(status: dict[str, Any]) -> str:
+def _format_status_verbose(status: dict[str, Any]) -> str:
     show_paths = _show_paths()
+    directories = _format_directories(status.get('dirs', {}))
     lines = [
         'SPECULATION EDGE STATUS',
-        f'Timestamp (UTC): {_format_timestamp(status.get("timestamp"))}',
-        f'Mode: {status.get("mode", "unknown")}',
+        f'🕒 {_format_timestamp(status.get("timestamp"))} | ⚙️ Mode: {status.get("mode", "unknown")}',
         '',
-        'Directories:',
+        'Directory health:',
+        *directories,
     ]
-    for name, exists in status.get('dirs', {}).items():
-        lines.append(f'  {name}: {"OK" if exists else "MISSING"}')
 
     lines.append('')
     lines.append(_format_file('Universe file', status.get('universe_file'), show_paths=show_paths))
@@ -124,6 +169,8 @@ def _format_status(status: dict[str, Any]) -> str:
 
     market_state = status.get('market_data_state', {})
     lock_info = status.get('market_data_lock', {})
+    lines.append('')
+    lines.append('Market data:')
     lines.append(_format_market_status(market_state, lock_info))
     lines.append(_format_market_lock(lock_info))
 
@@ -132,30 +179,29 @@ def _format_status(status: dict[str, Any]) -> str:
     lines.append(_format_command_status('Scan', status.get('scan_state'), status.get('scan_lock')))
     lines.append(_format_command_status('Universe', status.get('universe_state'), status.get('universe_lock')))
     lines.append(_format_command_status('Pretrade', status.get('pretrade_state'), status.get('pretrade_lock')))
+    lines.append('')
+    lines.append('Command locks:')
     lines.append(_format_command_lock('Scan', status.get('scan_lock')))
     lines.append(_format_command_lock('Universe', status.get('universe_lock')))
     lines.append(_format_command_lock('Pretrade', status.get('pretrade_lock')))
 
-    lines.append(
-        _format_file('Latest pretrade report', status.get('latest_pretrade'), show_paths=show_paths)
-    )
-    lines.append(
-        _format_file('Latest spread report', status.get('latest_spread_report'), show_paths=show_paths)
-    )
+    lines.append('')
+    lines.append(_format_file('Latest pretrade report', status.get('latest_pretrade'), show_paths=show_paths))
+    lines.append(_format_file('Latest spread report', status.get('latest_spread_report'), show_paths=show_paths))
 
     spread_samples = status.get('spread_samples', {})
+    lookback_days = spread_samples.get('lookback_days')
+    if lookback_days is None:
+        lookback_days = _spread_sampling_lookback()
     lines.append(
-        'Spread samples: '
-        f'{spread_samples.get("count", 0)} '
-        f'(lookback {spread_samples.get("lookback_days", config.SPREAD_SAMPLE_LOOKBACK_DAYS)} days)'
+        f'📊 Spread samples: {spread_samples.get("count", 0)} (lookback {lookback_days}d)'
     )
 
     open_trades = status.get('open_trades', {})
     live_open = open_trades.get('live')
     paper_open = open_trades.get('paper')
-    live_text = str(live_open) if live_open is not None else 'unknown'
-    paper_text = str(paper_open) if paper_open is not None else 'unknown'
-    lines.append(f'Open trades: live={live_text}, paper={paper_text}')
+    lines.append('')
+    lines.append(_format_open_trades(live_open, paper_open))
 
     return '\n'.join(lines)
 
@@ -247,15 +293,13 @@ def _format_command_status(
 ) -> str:
     state = state or {}
     lock_info = lock_info or {}
-    status = str(state.get('status') or '').lower()
-    if status not in {'running', 'idle', 'failed'}:
-        status = 'running' if lock_info.get('exists') else 'idle'
+    status = _command_status_value(state, lock_info)
     if status == 'running':
         started = state.get('run_started_at') or lock_info.get('started_at')
-        return f'{label} status: running (started {_format_timestamp(started)})'
+        return f'{_command_icon(status)} {label} status: running (started {_format_timestamp(started)})'
     if status == 'failed':
         finished = state.get('run_finished_at') or state.get('last_attempt_at')
-        return f'{label} status: failed (last finish {_format_timestamp(finished)})'
+        return f'{_command_icon(status)} {label} status: failed (last finish {_format_timestamp(finished)})'
 
     last_run = _format_timestamp(state.get('last_run'))
     duration = state.get('last_duration_seconds')
@@ -264,18 +308,89 @@ def _format_command_status(
     if outcome == 'skipped':
         last_attempt = _format_timestamp(state.get('last_attempt_at'))
         return (
-            f'{label} status: idle (last run {last_run}, '
+            f'{_command_icon("idle")} {label} status: idle (last run {last_run}, '
             f'last attempt {last_attempt}, outcome skipped)'
         )
-    return f'{label} status: idle (last run {last_run}{duration_text})'
+    return f'{_command_icon("idle")} {label} status: idle (last run {last_run}{duration_text})'
 
 
 def _format_command_lock(label: str, lock_info: dict[str, Any] | None) -> str:
     lock_info = lock_info or {}
     if not lock_info.get('exists'):
-        return f'{label} lock: none'
+        return f'{_lock_icon(False)} {label} lock: none'
     started_at = _format_timestamp(lock_info.get('started_at'))
-    return f'{label} lock: present (started {started_at})'
+    return f'{_lock_icon(True)} {label} lock: present (started {started_at})'
+
+
+def _format_directories(dirs: dict[str, bool]) -> list[str]:
+    if not dirs:
+        return ['  ⚠️ directories unknown']
+    entries: list[str] = []
+    for name, exists in sorted(dirs.items()):
+        entries.append(f'  {_status_icon(exists)} {name}')
+    return entries
+
+
+def _format_open_trades(live: int | None, paper: int | None) -> str:
+    live_text = str(live) if live is not None else 'unknown'
+    paper_text = str(paper) if paper is not None else 'unknown'
+    live_icon = _status_icon(bool(live))
+    paper_icon = _status_icon(bool(paper))
+    return f'Open trades: live {live_icon} {live_text} | paper {paper_icon} {paper_text}'
+
+
+def _status_icon(ok: bool) -> str:
+    return '✅' if ok else '⚠️'
+
+
+def _directory_summary(ok_dirs: int, total_dirs: int) -> str:
+    if total_dirs == 0:
+        return 'Directories: unknown'
+    icon = '✅' if ok_dirs == total_dirs else '⚠️'
+    return f'Directories: {icon} {ok_dirs}/{total_dirs} OK'
+
+
+def _command_summary_entries(status: dict[str, Any]) -> list[str]:
+    entries: list[str] = []
+    items = (
+        ('Scan', status.get('scan_state'), status.get('scan_lock')),
+        ('Universe', status.get('universe_state'), status.get('universe_lock')),
+        ('Pretrade', status.get('pretrade_state'), status.get('pretrade_lock')),
+    )
+    for label, cmd_state, cmd_lock in items:
+        cmd_state = cmd_state or {}
+        cmd_lock = cmd_lock or {}
+        state_label = _command_status_value(cmd_state, cmd_lock)
+        entries.append(f'{label} {_command_icon(state_label)} {state_label}')
+    return entries
+
+
+def _command_status_value(state: dict[str, Any], lock_info: dict[str, Any]) -> str:
+    status = str(state.get('status') or '').lower()
+    if status not in {'running', 'idle', 'failed'}:
+        status = 'running' if lock_info.get('exists') else 'idle'
+    return status
+
+
+def _market_status_summary(market_state: dict[str, Any], lock_info: dict[str, Any]) -> str:
+    status = _command_status_value(market_state, lock_info)
+    return f'{_command_icon(status)} {status}'
+
+
+def _artifact_icon(present: bool) -> str:
+    return '✅' if present else '⚠️'
+
+
+def _command_icon(status: str) -> str:
+    if status == 'running':
+        return '⏳'
+    if status == 'failed':
+        return '❌'
+    return '✅'
+
+
+def _lock_icon(active: bool) -> str:
+    return '🔒' if active else '🟢'
 
 
 def _format_path(value: str, show_paths: bool) -> str:
@@ -349,7 +464,7 @@ def _count_spread_samples(payload: dict[str, Any]) -> dict[str, Any]:
                 count += len(entries)
     return {
         'count': count,
-        'lookback_days': payload.get('lookback_days', config.SPREAD_SAMPLE_LOOKBACK_DAYS),
+        'lookback_days': payload.get('lookback_days', config.CONFIG["spread_sampling"]["lookback_days"]),
     }
 
 

@@ -36,17 +36,17 @@ def validate_quote(
             logger.warning('SpreadGate reject %s: invalid spread value.', symbol)
         return False, 'Missing spread data from yfinance'
 
-    if spread_value > config.MAX_SPREAD_PCT:
+    if spread_value > config.CONFIG["max_spread_pct"]:
         if logger:
             logger.warning(
                 'SpreadGate reject %s: spread %.4f > %.4f.',
                 symbol,
                 spread_value,
-                config.MAX_SPREAD_PCT,
+                config.CONFIG["max_spread_pct"],
             )
         return (
             False,
-            f'Spread too wide ({spread_value * 100:.2f}% > {config.MAX_SPREAD_PCT * 100:.2f}%)',
+            f'Spread too wide ({spread_value * 100:.2f}% > {config.CONFIG["max_spread_pct"] * 100:.2f}%)',
         )
 
     return True, None

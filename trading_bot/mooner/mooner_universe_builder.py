@@ -57,8 +57,10 @@ def _passes_universe(df: pd.DataFrame, currency_code: str) -> bool:
     price = close.iloc[-1]
     if pd.isna(price):
         return False
+    
+    mooner_config = config.CONFIG["mooner"]
     price_gbp = _to_gbp(price, currency_code)
-    if price_gbp < config.MOONER_PRICE_MIN_GBP:
+    if price_gbp < mooner_config["price_min_gbp"]:
         return False
 
     ma200 = close.rolling(window=200, min_periods=200).mean()
@@ -70,11 +72,11 @@ def _passes_universe(df: pd.DataFrame, currency_code: str) -> bool:
         return False
 
     drawdown = _max_drawdown(close.tail(250))
-    if drawdown > config.MOONER_DRAWDOWN_MAX:
+    if drawdown > mooner_config["drawdown_max"]:
         return False
 
     high90 = close.tail(90).max()
-    if high90 > price * (1 + config.MOONER_RESISTANCE_BUFFER):
+    if high90 > price * (1 + mooner_config["resistance_buffer"]):
         return False
 
     return True

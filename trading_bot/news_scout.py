@@ -9,12 +9,23 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, quote_plus
 
+import os
+import requests
+
+from trading_bot import config as bot_config
 from trading_bot.paths import news_scout_output_path
 from trading_bot.symbols import tradingview_symbol
 
 SETUP_FILENAME = "SetupCandidates.json"
 NEWS_SCOUT_LIMIT = 10
+LLM_MAX_TOKENS = 200
+LLM_TEMPERATURE = 0.2
+AI_HEADER = "News scout AI sentiment"
 
+NEWS_SCOUT_LLM_CONFIG = bot_config.CONFIG.get("news_scout", {})
+NEWS_SCOUT_LLM_ENABLED = NEWS_SCOUT_LLM_CONFIG.get("llm_enabled", False)
+NEWS_SCOUT_LLM_MODEL = NEWS_SCOUT_LLM_CONFIG.get("llm_model", "gpt-3.5-turbo")
+NEWS_SCOUT_API_KEY_ENV = NEWS_SCOUT_LLM_CONFIG.get("api_key_env", "OPENAI_API_KEY")
 
 def run_news_scout(base_dir: Path, logger: logging.Logger, limit: int = NEWS_SCOUT_LIMIT) -> list[dict[str, Any]]:
     """Build a news link summary for the latest setup candidates."""
@@ -50,6 +61,7 @@ def run_news_scout(base_dir: Path, logger: logging.Logger, limit: int = NEWS_SCO
                 "links": links,
             }
         )
+    entries = _enrich_with_llm(entries, logger)
     payload = {
         "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "entries": entries,
@@ -172,6 +184,116 @@ def _build_links(symbol: str | None, display: str | None, tv_url: str | None) ->
         links.append({"label": "Threads", "url": threads_url})
     return links
 
+
+def _enrich_with_llm(entries: list[dict[str, Any]], logger: logging.Logger) -> list[dict[str, Any]]:
+    if not NEWS_SCOUT_LLM_ENABLED:
+        return entries
+    api_key = os.getenv(NEWS_SCOUT_API_KEY_ENV)
+    if not api_key:
+        logger.info(
+            'News scout LLM disabled (missing API key in env %s).',
+            NEWS_SCOUT_API_KEY_ENV,
+        )
+        return entries
+    logger.info(
+        'News scout LLM enrichment requested (model=%s, entries=%s).',
+        NEWS_SCOUT_LLM_MODEL,
+        len(entries),
+    )
+    prompt = _build_llm_prompt(entries)
+    if not prompt:
+        logger.info('News scout LLM prompt empty, skipping LLM enrichment.')
+        return entries
+    logger.info('News scout LLM call starting (model=%s).', NEWS_SCOUT_LLM_MODEL)
+    try:
+        response_text = _call_openai(prompt, api_key)
+    except Exception as exc:
+        logger.warning('News scout LLM call failed: %s', exc)
+        return entries
+    insights = _parse_llm_response(response_text, logger)
+    if not insights:
+        logger.info('News scout LLM returned no insights.')
+        return entries
+    for entry in entries:
+        symbol = entry.get('symbol')
+        if symbol and symbol in insights:
+            entry['llm_insight'] = insights[symbol]
+    logger.info(
+        'News scout LLM applied insights to %d entries: %s',
+        sum(1 for entry in entries if entry.get('llm_insight')),
+        ', '.join(sorted(insights.keys())),
+    )
+    return entries
+
+
+def _build_llm_prompt(entries: list[dict[str, Any]]) -> str | None:
+    if not entries:
+        return None
+    lines = []
+    for entry in entries[:5]:
+        symbol = entry.get('symbol') or 'UNKNOWN'
+        reason = entry.get('reason') or 'No explicit reason provided'
+        links = [f"{link.get('label')}: {link.get('url')}" for link in entry.get('links') or [] if link.get('url')]
+        link_block = "; ".join(links[:3])
+        lines.append(f"{symbol} — {reason}. Links: {link_block}")
+    body = "\n".join(lines)
+    prompt = (
+        f"{AI_HEADER}\n"
+        "You receive a series of market setup summaries. "
+        "For each symbol, reply with a JSON array of objects, "
+        "each containing 'symbol', 'sentiment' (positive/neutral/negative), "
+        "'highlight' (<=60 chars), and 'callout' (short note). "
+        "If you cannot provide insight, set sentiment to 'neutral'. "
+        "JSON only, no extra text.\n"
+        f"Setups:\n{body}"
+    )
+    return prompt
+
+
+def _call_openai(prompt: str, api_key: str) -> str:
+    url = "https://api.openai.com/v1/chat/completions"
+    payload = {
+        "model": NEWS_SCOUT_LLM_MODEL,
+        "messages": [
+            {"role": "system", "content": "You summarize speculative setups carefully."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": LLM_TEMPERATURE,
+        "max_tokens": LLM_MAX_TOKENS,
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    response = requests.post(url, json=payload, headers=headers, timeout=15)
+    response.raise_for_status()
+    data = response.json()
+    return data["choices"][0]["message"]["content"]
+
+
+def _parse_llm_response(text: str, logger: logging.Logger) -> dict[str, str]:
+    start = text.find("[")
+    end = text.rfind("]")
+    if start == -1 or end == -1:
+        raise ValueError("LLM response missing JSON array")
+    snippet = text[start:end + 1]
+    payload = json.loads(snippet)
+    insights: dict[str, str] = {}
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol") or "").strip()
+        sentiment = str(item.get("sentiment") or "").strip()
+        highlight = str(item.get("highlight") or "").strip()
+        callout = str(item.get("callout") or "").strip()
+        if symbol:
+            parts = [sentiment] if sentiment else []
+            if highlight:
+                parts.append(highlight)
+            if callout:
+                parts.append(callout)
+            insights[symbol] = " | ".join(part for part in parts if part)
+    return insights
 
 def _news_search_url(query: str | None) -> str | None:
     if not query:

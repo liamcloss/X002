@@ -1,69 +1,44 @@
-"""Non-secret configuration for the trading bot."""
+"""Configuration loader for the trading bot."""
 
 from __future__ import annotations
 
 import os
-from typing import Iterable
+from pathlib import Path
+from typing import Any, Iterable
 
+import yaml
 from dotenv import load_dotenv
 
 from trading_bot.constants import Mode, REQUIRED_SECRET_KEYS
 
-MODE = "LIVE"  # or "TEST"
+# This will be populated by the load_config function
+CONFIG: dict[str, Any] = {}
 
-TEST_MODE_POSITION_SIZE = 25
-TEST_MODE_MAX_RISK = 2
 
-LIVE_MODE_POSITION_MIN = 100
-LIVE_MODE_POSITION_MAX = 200
-LIVE_MODE_MAX_RISK = 20
-
-MAX_SPREAD_PCT = 0.005
-PRETRADE_CANDIDATE_LIMIT = 10
-SPREAD_SAMPLE_LOOKBACK_DAYS = 20
-SPREAD_SAMPLE_OPEN_COOLDOWN_MINUTES = 30
-SCAN_REFRESH_MODE = 'skip'  # always | if_stale | skip
-MARKET_DATA_REFRESH_MAX_AGE_HOURS = 24.0
-
-STOP_PERCENT_RANGE = (None, None)
-TARGET_PERCENT_RANGE = (None, None)
-COOLDOWN_DAYS = None
-PULLBACK_LIMITS = None
-
-MOONER_SUBSET_MAX = 10
-MOONER_CANDIDATE_VOLUME_THRESHOLD = 1_000_000
-MOONER_CANDIDATE_DOLLAR_VOLUME_GBP = 20_000_000
-MOONER_CANDIDATE_SURGE_MULTIPLIER = 2.5
-MOONER_ATR_PERCENTILE = 0.8
-MOONER_ATR_COMPRESSION_RATIO = 0.75
-MOONER_PRICE_MIN_GBP = 2.0
-MOONER_DRAWDOWN_MAX = 0.65
-MOONER_RESISTANCE_BUFFER = 0.10
-MOONER_STATE_VOLUME_MULTIPLIER = 1.5
-MOONER_STATE_ATR_RISE_DAYS = 3
-MOONER_REL_STRENGTH_LOOKBACK = 90
+def load_config(config_file: str | Path = "config.yaml") -> None:
+    """Load settings from the YAML config file and populate the global CONFIG dict."""
+    global CONFIG
+    with open(config_file, "r", encoding="utf-8") as f:
+        loaded = yaml.safe_load(f)
+    CONFIG = loaded if isinstance(loaded, dict) else {}
 
 
 def load_secrets(env_file: str | None = None) -> dict[str, str]:
     """Load required secrets from .env and return them without logging values."""
-
     load_dotenv(dotenv_path=env_file)
     missing = _missing_env_vars(REQUIRED_SECRET_KEYS)
     if missing:
         joined = ", ".join(missing)
         raise RuntimeError(
-            "Missing required environment variables: "
-            f"{joined}. Ensure .env is present and loaded."
+            f"Missing required environment variables: {joined}. Ensure .env is present and loaded."
         )
-
     return {key: os.environ[key] for key in REQUIRED_SECRET_KEYS}
 
 
 def validate_mode() -> None:
-    """Ensure MODE is a valid configured mode."""
-
+    """Ensure the configured mode is valid."""
     if MODE not in {Mode.TEST.value, Mode.LIVE.value}:
-        raise RuntimeError(f"Invalid MODE '{MODE}'. Must be TEST or LIVE.")
+        raise RuntimeError(f"Invalid mode '{MODE}' in config.yaml. Must be TEST or LIVE.")
 
 
 def _missing_env_vars(required: Iterable[str]) -> list[str]:
@@ -72,3 +47,116 @@ def _missing_env_vars(required: Iterable[str]) -> list[str]:
         if not os.environ.get(key):
             missing.append(key)
     return missing
+
+# Load the config automatically when this module is imported
+load_config()
+
+
+def _extract_mode() -> str:
+    raw = CONFIG.get("mode")
+    if isinstance(raw, str):
+        normalized = raw.strip().upper()
+        if normalized in {Mode.TEST.value, Mode.LIVE.value}:
+            return normalized
+    return Mode.LIVE.value
+
+
+MODE = _extract_mode()
+
+
+def _live_mode_value(key: str, default: float) -> float:
+    live_mode = CONFIG.get("live_mode")
+    if isinstance(live_mode, dict):
+        value = live_mode.get(key)
+        if isinstance(value, (int, float)):
+            return float(value)
+    return float(default)
+
+
+LIVE_MODE_POSITION_MIN = _live_mode_value("position_min", 100.0)
+LIVE_MODE_POSITION_MAX = _live_mode_value("position_max", 200.0)
+LIVE_MODE_MAX_RISK = _live_mode_value("max_risk", 20.0)
+
+
+def _get_number(key: str, default: float) -> float:
+    value = CONFIG.get(key)
+    if isinstance(value, (int, float)):
+        return float(value)
+    return float(default)
+
+
+def _get_int(key: str, default: int) -> int:
+    value = CONFIG.get(key)
+    if isinstance(value, (int, float)):
+        return int(value)
+    return int(default)
+
+
+def _get_str(key: str, default: str) -> str:
+    value = CONFIG.get(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return default
+
+
+def _get_tuple(key: str, default: tuple[Any, ...]) -> tuple[Any, ...]:
+    value = CONFIG.get(key)
+    if isinstance(value, (list, tuple)):
+        return tuple(value)
+    return default
+
+
+def _section(key: str) -> dict[str, Any]:
+    value = CONFIG.get(key)
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _section_int(section: dict[str, Any], key: str, default: int) -> int:
+    value = section.get(key)
+    if isinstance(value, (int, float)):
+        return int(value)
+    return int(default)
+
+
+def _section_float(section: dict[str, Any], key: str, default: float) -> float:
+    value = section.get(key)
+    if isinstance(value, (int, float)):
+        return float(value)
+    return float(default)
+
+
+TEST_MODE_CONFIG = _section("test_mode")
+LIVE_MODE_CONFIG = _section("live_mode")
+
+TEST_MODE_POSITION_SIZE = _section_int(TEST_MODE_CONFIG, "position_size", 25)
+TEST_MODE_MAX_RISK = _section_float(TEST_MODE_CONFIG, "max_risk", 2.0)
+
+MAX_SPREAD_PCT = _get_number("max_spread_pct", 0.005)
+PRETRADE_CANDIDATE_LIMIT = _get_int("pretrade_candidate_limit", 10)
+DAILY_SCAN_DISPLAY_LIMIT = _get_int("daily_scan_display_limit", 10)
+SCAN_REFRESH_MODE = _get_str("scan_refresh_mode", "skip")
+MARKET_DATA_REFRESH_MAX_AGE_HOURS = _get_number("market_data_refresh_max_age_hours", 24.0)
+
+SPREAD_SAMPLING_LOOKBACK_DAYS = _section_int(_section("spread_sampling"), "lookback_days", 20)
+SPREAD_SAMPLING_OPEN_COOLDOWN_MINUTES = _section_int(_section("spread_sampling"), "open_cooldown_minutes", 30)
+
+STOP_PERCENT_RANGE = _get_tuple("stop_percent_range", (None, None))
+TARGET_PERCENT_RANGE = _get_tuple("target_percent_range", (None, None))
+COOLDOWN_DAYS = CONFIG.get("cooldown_days")
+PULLBACK_LIMITS = CONFIG.get("pullback_limits")
+
+MOONER_CONFIG = _section("mooner")
+MOONER_SUBSET_MAX = _section_int(MOONER_CONFIG, "subset_max", 10)
+MOONER_CANDIDATE_VOLUME_THRESHOLD = _section_int(MOONER_CONFIG, "candidate_volume_threshold", 1_000_000)
+MOONER_CANDIDATE_DOLLAR_VOLUME_GBP = _section_float(MOONER_CONFIG, "candidate_dollar_volume_gbp", 20_000_000)
+MOONER_CANDIDATE_SURGE_MULTIPLIER = _section_float(MOONER_CONFIG, "candidate_surge_multiplier", 2.5)
+MOONER_ATR_PERCENTILE = _section_float(MOONER_CONFIG, "atr_percentile", 0.8)
+MOONER_ATR_COMPRESSION_RATIO = _section_float(MOONER_CONFIG, "atr_compression_ratio", 0.75)
+MOONER_PRICE_MIN_GBP = _section_float(MOONER_CONFIG, "price_min_gbp", 2.0)
+MOONER_DRAWDOWN_MAX = _section_float(MOONER_CONFIG, "drawdown_max", 0.65)
+MOONER_RESISTANCE_BUFFER = _section_float(MOONER_CONFIG, "resistance_buffer", 0.1)
+MOONER_STATE_VOLUME_MULTIPLIER = _section_float(MOONER_CONFIG, "state_volume_multiplier", 1.5)
+MOONER_STATE_ATR_RISE_DAYS = _section_int(MOONER_CONFIG, "state_atr_rise_days", 3)
+MOONER_REL_STRENGTH_LOOKBACK = _section_int(MOONER_CONFIG, "rel_strength_lookback", 90)

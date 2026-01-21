@@ -11,7 +11,6 @@ from uuid import uuid4
 import pandas as pd
 
 from trading_bot import config
-from trading_bot.config import LIVE_MODE_MAX_RISK, LIVE_MODE_POSITION_MAX, LIVE_MODE_POSITION_MIN
 from trading_bot.market_data import cache
 from trading_bot.messaging.telegram_client import send_paper_message
 from trading_bot.signals.risk_geometry import find_risk_geometry
@@ -258,12 +257,16 @@ def _candidate_geometry(candidate: dict, entry_price: float) -> dict:
 
 
 def _position_size_for_risk(stop_pct: float) -> float:
-    if config.MODE == 'TEST':
-        return float(config.TEST_MODE_POSITION_SIZE)
+    if config.CONFIG["mode"] == "TEST":
+        return float(config.CONFIG["test_mode"]["position_size"])
+    live_mode_config = config.CONFIG["live_mode"]
     if stop_pct <= 0:
-        return float(LIVE_MODE_POSITION_MIN)
-    target_size = LIVE_MODE_MAX_RISK / stop_pct
-    bounded = max(LIVE_MODE_POSITION_MIN, min(LIVE_MODE_POSITION_MAX, target_size))
+        return float(live_mode_config["position_min"])
+    target_size = live_mode_config["max_risk"] / stop_pct
+    bounded = max(
+        live_mode_config["position_min"],
+        min(live_mode_config["position_max"], target_size),
+    )
     return float(round(bounded))
 
 
