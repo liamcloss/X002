@@ -141,6 +141,7 @@ MARKET_DATA_REFRESH_MAX_AGE_HOURS = _get_number("market_data_refresh_max_age_hou
 
 SPREAD_SAMPLING_LOOKBACK_DAYS = _section_int(_section("spread_sampling"), "lookback_days", 20)
 SPREAD_SAMPLING_OPEN_COOLDOWN_MINUTES = _section_int(_section("spread_sampling"), "open_cooldown_minutes", 30)
+LATE_MOVE_PCT_MAX = _get_number("late_move_pct_max", 0.10)
 
 STOP_PERCENT_RANGE = _get_tuple("stop_percent_range", (None, None))
 TARGET_PERCENT_RANGE = _get_tuple("target_percent_range", (None, None))

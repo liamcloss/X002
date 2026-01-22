@@ -12,7 +12,8 @@ from urllib.parse import quote
 from src.market_data import yfinance_client
 from trading_bot.execution.open_trades import get_live_open_trade_count
 from trading_bot.mooner import load_mooner_states
-from trading_bot.paths import pretrade_viability_path, setup_candidates_path
+from trading_bot.paths import latest_setup_candidates_path, pretrade_viability_path
+from trading_bot.phase import set_phase
 from trading_bot.run_state import finish_run, start_run
 from trading_bot.symbols import tradingview_symbol, yfinance_symbol
 from trading_bot.pretrade.notifier import build_pretrade_messages, send_pretrade_messages
@@ -27,6 +28,7 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
     """Run the pre-trade viability check against yesterday's setups."""
 
     logger = logger or logging.getLogger('trading_bot')
+    set_phase("execution")
     base_dir = base_dir or Path(__file__).resolve().parents[2]
     run_handle = start_run(base_dir, 'pretrade', logger)
     if not run_handle.acquired:
@@ -41,7 +43,10 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
             return
 
         setup_path = _find_latest_setup_file(base_dir, logger)
-        setups = _load_setup_candidates(setup_path, logger)
+        payload, setups = _load_setup_candidates(setup_path, logger)
+        if not _validate_snapshot_date(payload, logger):
+            logger.error('Pretrade aborted: snapshot is intraday or missing detected date.')
+            return
         mooner_states = load_mooner_states(base_dir, logger)
         mooner_map = _build_mooner_map(mooner_states)
 
@@ -61,6 +66,9 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
         spread_samples: list[dict[str, Any]] = []
         for index, setup in enumerate(setups, start=1):
             scan_rank = _extract_scan_rank(setup, index)
+            detected_at_utc = setup.get('detected_at_utc')
+            detected_close_date = setup.get('detected_close_date')
+            detected_price = _extract_detected_price(setup)
             parsed = _parse_setup_candidate(setup)
             if parsed is None:
                 reject = _reject_result(
@@ -71,6 +79,9 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
                     scan_rank=scan_rank,
                     display_ticker=_extract_display_ticker(setup),
                     tradingview_url=_extract_tradingview_url(setup),
+                    detected_at_utc=detected_at_utc,
+                    detected_close_date=detected_close_date,
+                    detected_price=detected_price,
                 )
                 results.append(
                     _attach_mooner_context(
@@ -98,6 +109,9 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
                     scan_rank=scan_rank,
                     display_ticker=display_ticker,
                     tradingview_url=tradingview_url,
+                    detected_at_utc=detected_at_utc,
+                    detected_close_date=detected_close_date,
+                    detected_price=detected_price,
                 )
                 results.append(
                     _attach_mooner_context(
@@ -140,6 +154,9 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
                     scan_rank=scan_rank,
                     display_ticker=display_ticker,
                     tradingview_url=tradingview_url,
+                    detected_at_utc=detected_at_utc,
+                    detected_close_date=detected_close_date,
+                    detected_price=detected_price,
                 )
                 results.append(
                     _attach_mooner_context(
@@ -151,6 +168,7 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
                 )
                 continue
 
+            detected_price = _extract_detected_price(setup)
             result = evaluate_pretrade(
                 symbol=symbol,
                 planned_entry=planned_entry,
@@ -160,12 +178,19 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
                 live_ask=float(ask),
                 open_trades_count=open_trades_count,
                 checked_at=checked_at,
+                detected_price=detected_price,
+                current_price=float(last) if last is not None else None,
+                mode=config.CONFIG.get("mode"),
+                max_move_since_detection=config.LATE_MOVE_PCT_MAX,
             )
             result['last'] = last
             result['spread'] = spread
             result['planned_entry'] = planned_entry
             result['planned_stop'] = planned_stop
             result['planned_target'] = planned_target
+            result['detected_at_utc'] = setup.get('detected_at_utc')
+            result['detected_close_date'] = setup.get('detected_close_date')
+            result['detected_price'] = detected_price
             result['scan_rank'] = scan_rank
             result['display_ticker'] = display_ticker
             result['tradingview_url'] = tradingview_url
@@ -193,13 +218,15 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
 
 
 def _find_latest_setup_file(base_dir: Path, logger: logging.Logger) -> Path | None:
+    path = latest_setup_candidates_path(base_dir)
+    if path:
+        return path
     candidates = [
-        setup_candidates_path(base_dir),
         base_dir / SETUP_FILENAME,
         base_dir / 'outputs' / SETUP_FILENAME,
         base_dir / 'data' / SETUP_FILENAME,
     ]
-    paths = [path for path in candidates if path.exists()]
+    paths = [candidate for candidate in candidates if candidate.exists()]
     if not paths:
         paths = list(base_dir.rglob(SETUP_FILENAME))
     if not paths:
@@ -208,21 +235,38 @@ def _find_latest_setup_file(base_dir: Path, logger: logging.Logger) -> Path | No
     return max(paths, key=lambda path: path.stat().st_mtime)
 
 
-def _load_setup_candidates(path: Path | None, logger: logging.Logger) -> list[dict[str, Any]]:
+def _load_setup_candidates(
+    path: Path | None,
+    logger: logging.Logger,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     if path is None:
-        return []
+        return {}, []
     try:
         payload = json.loads(path.read_text(encoding='utf-8'))
     except OSError as exc:
         logger.error('Failed to read %s: %s', path, exc)
-        return []
+        return {}, []
     except json.JSONDecodeError as exc:
         logger.error('Invalid JSON in %s: %s', path, exc)
-        return []
+        return {}, []
 
     candidates = _extract_candidates(payload)
     logger.info('Loaded %s setup candidates from %s.', len(candidates), path)
-    return candidates
+    return payload if isinstance(payload, dict) else {}, candidates
+
+
+def _validate_snapshot_date(payload: dict[str, Any], logger: logging.Logger) -> bool:
+    # Guardrail: execution must anchor to a frozen snapshot with a valid close date.
+    data_as_of = payload.get('data_as_of')
+    detected_close_date = _normalize_date_value(data_as_of)
+    if not detected_close_date:
+        logger.error('Snapshot missing detected_close_date/data_as_of; refusing execution.')
+        return False
+    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    if detected_close_date > today:
+        logger.error('Snapshot close date is in the future (%s); refusing execution.', detected_close_date)
+        return False
+    return True
 
 
 def _extract_candidates(payload: Any) -> list[dict[str, Any]]:
@@ -319,6 +363,10 @@ def _extract_tradingview_url(payload: dict[str, Any]) -> str | None:
     return None
 
 
+def _extract_detected_price(payload: dict[str, Any]) -> float | None:
+    return _extract_value(payload, ('detected_price', 'price'))
+
+
 def _build_tradingview_url(symbol: str, display_ticker: str | None) -> str | None:
     if not symbol:
         return None
@@ -378,6 +426,22 @@ def _to_float(value: object | None) -> float | None:
     return numeric
 
 
+def _normalize_date_value(value: object | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    candidate = text[:10]
+    if len(candidate) != 10:
+        return None
+    if candidate[4] != '-' or candidate[7] != '-':
+        return None
+    if not (candidate[:4].isdigit() and candidate[5:7].isdigit() and candidate[8:10].isdigit()):
+        return None
+    return candidate
+
+
 def _reject_result(
     symbol: str,
     open_trades_count: int,
@@ -390,6 +454,9 @@ def _reject_result(
     scan_rank: int | None = None,
     display_ticker: str | None = None,
     tradingview_url: str | None = None,
+    detected_at_utc: str | None = None,
+    detected_close_date: str | None = None,
+    detected_price: float | None = None,
 ) -> dict[str, Any]:
     return {
         'symbol': symbol,
@@ -409,6 +476,11 @@ def _reject_result(
         'checked_at': checked_at,
         'scan_rank': scan_rank,
         'tradingview_url': tradingview_url,
+        'detected_at_utc': detected_at_utc,
+        'detected_close_date': detected_close_date,
+        'detected_price': detected_price,
+        'pct_move_since_detection': None,
+        'current_price': None,
     }
 
 

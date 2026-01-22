@@ -24,8 +24,31 @@ def outputs_subdir(base_dir: Path | None = None, *segments: str) -> Path:
     return _ensure_dir(current)
 
 
+def setup_candidates_dir(base_dir: Path | None = None) -> Path:
+    return outputs_subdir(base_dir, "setup_candidates")
+
+
+def setup_candidates_snapshot_path(
+    base_dir: Path | None = None,
+    snapshot_date: str | None = None,
+) -> Path:
+    directory = setup_candidates_dir(base_dir)
+    if snapshot_date:
+        return directory / f"SetupCandidates_{snapshot_date}.json"
+    return directory / "SetupCandidates.json"
+
+
 def setup_candidates_path(base_dir: Path | None = None) -> Path:
-    return outputs_subdir(base_dir, "setup_candidates") / "SetupCandidates.json"
+    return setup_candidates_snapshot_path(base_dir)
+
+
+def latest_setup_candidates_path(base_dir: Path | None = None) -> Path | None:
+    directory = setup_candidates_dir(base_dir)
+    candidates = list(directory.glob("SetupCandidates_*.json"))
+    if not candidates:
+        default_path = setup_candidates_snapshot_path(base_dir)
+        return default_path if default_path.exists() else None
+    return max(candidates, key=lambda path: path.stat().st_mtime)
 
 
 def mooner_output_path(base_dir: Path | None = None, filename: str = "") -> Path:
