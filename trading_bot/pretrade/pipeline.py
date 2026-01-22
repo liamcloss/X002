@@ -256,15 +256,15 @@ def _load_setup_candidates(
 
 
 def _validate_snapshot_date(payload: dict[str, Any], logger: logging.Logger) -> bool:
-    # Guardrail: execution must anchor to prior-day frozen snapshots.
+    # Guardrail: execution must anchor to a frozen snapshot with a valid close date.
     data_as_of = payload.get('data_as_of')
     detected_close_date = _normalize_date_value(data_as_of)
     if not detected_close_date:
         logger.error('Snapshot missing detected_close_date/data_as_of; refusing execution.')
         return False
     today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-    if detected_close_date >= today:
-        logger.error('Snapshot is intraday (%s); refusing execution.', detected_close_date)
+    if detected_close_date > today:
+        logger.error('Snapshot close date is in the future (%s); refusing execution.', detected_close_date)
         return False
     return True
 
