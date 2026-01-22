@@ -12,9 +12,12 @@ from urllib.parse import quote, quote_plus
 import os
 import requests
 
+from src.market_data import yfinance_client
+
 from trading_bot import config as bot_config
 from trading_bot.paths import news_scout_output_path
-from trading_bot.symbols import tradingview_symbol
+from trading_bot.pretrade.spread_gate import SpreadGate
+from trading_bot.symbols import tradingview_symbol, yfinance_symbol
 
 SETUP_FILENAME = "SetupCandidates.json"
 NEWS_SCOUT_LIMIT = 10
@@ -62,9 +65,20 @@ def run_news_scout(base_dir: Path, logger: logging.Logger, limit: int = NEWS_SCO
             }
         )
     entries = _enrich_with_llm(entries, logger)
+    entries, filtered_out, rejection_summary = _filter_entries_by_spread(entries, logger)
+    if filtered_out:
+        logger.info(
+            'News scout filtered %d entries due to spread gate (%s).',
+            len(filtered_out),
+            "; ".join(rejection_summary),
+        )
+    if not entries:
+        logger.warning('News scout produced no entries after spread filter.')
     payload = {
         "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "entries": entries,
+        "filtered_out_count": len(filtered_out),
+        "filtered_reasons": rejection_summary,
     }
     output_dir = news_scout_output_path(base_dir)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -295,6 +309,58 @@ def _parse_llm_response(text: str, logger: logging.Logger) -> dict[str, str]:
             insights[symbol] = " | ".join(part for part in parts if part)
     return insights
 
+
+def _filter_entries_by_spread(
+    entries: list[dict[str, Any]],
+    logger: logging.Logger,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    gate = SpreadGate(logger=logger)
+    passed: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    reasons: dict[str, int] = {}
+    for entry in entries:
+        symbol = entry.get("symbol")
+        display = entry.get("display_ticker")
+        quote_symbol = _resolve_quote_symbol(symbol, display)
+        if not quote_symbol:
+            reason = "Symbol mapping failed"
+            entry["spread_reason"] = reason
+            rejected.append(entry)
+            reasons[reason] = reasons.get(reason, 0) + 1
+            continue
+        quote = yfinance_client.get_quote(quote_symbol)
+        entry["quote_symbol"] = quote_symbol
+        entry["spread_pct"] = quote.get("spread")
+        passes, reason = gate.evaluate(quote)
+        entry["spread_reason"] = reason
+        if passes:
+            passed.append(entry)
+        else:
+            rejected.append(entry)
+            key = reason or "Spread gate rejected"
+            reasons[key] = reasons.get(key, 0) + 1
+    summary = [
+        f"{count}x {text}" for text, count in sorted(reasons.items(), key=lambda item: -item[1])
+    ]
+    return passed, rejected, summary
+
+
+def _resolve_quote_symbol(symbol: str | None, display: str | None) -> str | None:
+    if not symbol:
+        return None
+    short_name = _short_display(display, symbol)
+    return yfinance_symbol(symbol, short_name=short_name)
+
+
+def _short_display(display: str | None, symbol: str) -> str | None:
+    if not display:
+        return None
+    candidate = display.strip()
+    if not candidate or " " in candidate:
+        return None
+    if candidate.upper() == symbol.upper():
+        return None
+    return candidate
 def _news_search_url(query: str | None) -> str | None:
     if not query:
         return None

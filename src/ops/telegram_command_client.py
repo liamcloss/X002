@@ -87,6 +87,7 @@ COMMAND_ALIASES = {
 
 LOG_PATH = BASE_DIR / 'logs' / 'telegram_command_client.log'
 MAX_OUTPUT_CHARS = 3500
+NEWS_SCOUT_MESSAGE_CHAR_LIMIT = 3200
 MAX_MESSAGE_LOG_CHARS = 200
 JOB_COUNTER = itertools.count(1)
 PRODUCT_OUTPUT_COMMANDS = {'scan', 'mooner', 'yolo', 'news_scout'}
@@ -868,14 +869,7 @@ def _format_link_badges(links: list[dict[str, str]]) -> str:
 
 
 def _format_news_scout_links(links: list[dict[str, str]]) -> str:
-    badges: list[str] = []
-    for link in links:
-        url = link.get('url')
-        label = link.get('label') or 'LINK'
-        if not url:
-            continue
-        badges.append(f'{_html_escape(label)}: {_html_escape(url)}')
-    return ' | '.join(badges)
+    return _format_link_badges(links)
 
 
 def _build_news_scout_output(base_dir: Path, since: datetime | None) -> str | None:
@@ -892,38 +886,74 @@ def _build_news_scout_output(base_dir: Path, since: datetime | None) -> str | No
         return None
     entries = payload.get('entries') if isinstance(payload.get('entries'), list) else []
     as_of = payload.get('as_of') or latest.stem.split('_', 2)[-1]
-    lines = [
+    header = [
         'NEWS SCOUT SUMMARY',
         f'As of: {_html_escape(as_of)}',
         f'Entries: {len(entries)}',
         '',
     ]
+    filtered_out = payload.get('filtered_out_count', 0)
+    if filtered_out:
+        header.append(f'Filtered by spread gate: {filtered_out}')
+        for reason in payload.get('filtered_reasons') or []:
+            header.append(f'  {reason}')
+        header.append('')
     if not entries:
-        lines.append('No entries recorded.')
-        return '\n'.join(lines)
+        header.append('No entries recorded.')
+        return ['\n'.join(header).strip()]
+    return _chunk_news_scout_messages(entries, header)
 
+
+def _chunk_news_scout_messages(entries: list[dict[str, object]], header: list[str]) -> list[str]:
+    messages: list[str] = []
+    base_header = list(header)
+    current_lines = list(base_header)
+    current_chars = _lines_length(current_lines)
     for index, entry in enumerate(entries, start=1):
-        symbol = _html_escape(str(entry.get('symbol') or 'UNKNOWN').strip())
-        display = entry.get('display_ticker')
-        scan_rank = _html_escape(_format_rank(entry.get('scan_rank')))
-        lines.append(f'{index}. {symbol} (scan #{scan_rank})')
-        entry_price = _html_escape(_format_numeric(entry.get('entry')))
-        stop = _html_escape(_format_numeric(entry.get('stop')))
-        target = _html_escape(_format_numeric(entry.get('target')))
-        lines.append(f'   Entry: {entry_price} | Stop: {stop} | Target: {target}')
-        reason = str(entry.get('reason') or '').strip()
-        if reason:
-            lines.append(f'   Setup: {_html_escape(reason)}')
-          link_line = _format_news_scout_links(entry.get('links') or [])
-          if link_line:
-              lines.append(f'   Links: {link_line}')
-          insight = entry.get('llm_insight')
-          if insight:
-              lines.append(f'   AI: {_html_escape(insight)}')
-          if display:
-              lines.append(f'   Display ticker: {_html_escape(display)}')
-          lines.append('')
-    return '\n'.join(lines).strip()
+        block = _news_scout_entry_lines(entry, index)
+        block_text = '\n'.join(block)
+        block_length = len(block_text) + 1
+        if current_lines and current_chars + block_length > NEWS_SCOUT_MESSAGE_CHAR_LIMIT and len(current_lines) > len(base_header):
+            messages.append('\n'.join(current_lines).strip())
+            current_lines = list(base_header)
+            current_chars = _lines_length(current_lines)
+        current_lines.extend(block)
+        current_chars += block_length
+    if current_lines:
+        messages.append('\n'.join(current_lines).strip())
+    return [msg for msg in messages if msg]
+
+
+def _news_scout_entry_lines(entry: dict[str, object], index: int) -> list[str]:
+    lines: list[str] = []
+    symbol = _html_escape(str(entry.get('symbol') or 'UNKNOWN').strip())
+    scan_rank = _html_escape(_format_rank(entry.get('scan_rank')))
+    lines.append(f'{index}. {symbol} (scan #{scan_rank})')
+    entry_price = _html_escape(_format_numeric(entry.get('entry')))
+    stop = _html_escape(_format_numeric(entry.get('stop')))
+    target = _html_escape(_format_numeric(entry.get('target')))
+    lines.append(f'   Entry: {entry_price} | Stop: {stop} | Target: {target}')
+    reason = str(entry.get('reason') or '').strip()
+    if reason:
+        lines.append(f'   Setup: {_html_escape(reason)}')
+    links_line = _format_news_scout_links(entry.get('links') or [])
+    if links_line:
+        lines.append(f'   Links: {links_line}')
+    insight = entry.get('llm_insight')
+    if insight:
+        lines.append(f'   AI: {_html_escape(insight)}')
+    display = entry.get('display_ticker')
+    if display:
+        lines.append(f'   Display ticker: {_html_escape(display)}')
+    spread = entry.get('spread_pct')
+    if isinstance(spread, (int, float)):
+        lines.append(f'   Spread: {_format_percent(spread)}')
+    lines.append('')
+    return lines
+
+
+def _lines_length(lines: list[str]) -> int:
+    return sum(len(line) + 1 for line in lines)
 
 
 def _build_product_output(
@@ -1487,10 +1517,18 @@ async def _execute_command(
         stderr_text,
     )
     output = command_output_to_text(result)
+    product_blocks: list[str] = []
     if job.command_name in PRODUCT_OUTPUT_COMMANDS:
         product_output = _build_product_output(job.command_name, BASE_DIR, job.started_at)
         if product_output:
-            output = truncate_output(product_output)
+            if isinstance(product_output, list):
+                product_blocks = [truncate_output(block) for block in product_output if block]
+            else:
+                block = truncate_output(product_output)
+                if block:
+                    product_blocks = [block]
+        if product_blocks:
+            output = "\n\n".join(product_blocks)
         else:
             output = _format_missing_product_output(
                 job.command_name,
@@ -1523,6 +1561,28 @@ async def _execute_command(
         force_send=job.command_name in PRODUCT_OUTPUT_COMMANDS,
         use_html=job.command_name in PRODUCT_OUTPUT_COMMANDS,
     )
+    sent_product_blocks = False
+    if (
+        product_blocks
+        and job.command_name in PRODUCT_OUTPUT_COMMANDS
+        and job.chat_id is not None
+    ):
+        sent_product_blocks = True
+        for block in product_blocks:
+            try:
+                await context.bot.send_message(
+                    chat_id=job.chat_id,
+                    text=block,
+                    parse_mode='HTML',
+                )
+            except Exception as send_exc:  # noqa: BLE001 - log and continue
+                logger.error(
+                    'Failed to send Telegram reply to chat %s for job %s: %s',
+                    job.chat_id,
+                    job.job_id,
+                    send_exc,
+                )
+        reply_text = None
     if job.command_name == 'pretrade' and process.returncode == 0:
         reply_text = None
     if reply_text and job.chat_id is not None:

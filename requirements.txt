@@ -6,3 +6,4 @@ python-dotenv
 pyarrow
 tzdata
 python-telegram-bot>=20.0
+telegram

@@ -468,6 +468,10 @@ def _count_spread_samples(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _spread_sampling_lookback() -> int:
+    return config.CONFIG["spread_sampling"]["lookback_days"]
+
+
 __all__ = [
     'run_status',
 ]

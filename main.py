@@ -150,6 +150,9 @@ def _print_news_scout_summary(entries: list[dict]) -> None:
                 f"{link['label']}: {link['url']}" for link in links if link.get('url')
             )
             print(f'  Links: {formatted}')
+        spread = entry.get('spread_pct')
+        if isinstance(spread, (int, float)):
+            print(f'  Spread: {spread * 100:.2f}%')
         print('')
 
 
