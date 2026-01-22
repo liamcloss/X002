@@ -136,11 +136,13 @@ def _build_executable_message(result: dict, checked_at: str, index: int) -> str:
     lines = [
         'PRE-TRADE EXECUTABLE',
         f'{exec_rank}. {symbol} (scan #{scan_rank})',
+        *_format_detection_lines(result),
         f'Spread: {_format_percent(result.get("spread_pct"))}',
         f'Drift: {_format_percent(result.get("price_drift_pct"))}',
         f'RR: {_format_number(result.get("real_rr"))}',
         f'Stop: {_format_percent(result.get("real_stop_distance_pct"))}',
         f'Entry: {entry} | Stop: {stop} | Target: {target}',
+        'Verdict: EXECUTABLE',
     ]
     lines.extend(_format_mooner_context(result))
     chart_url = _chart_url(result)
@@ -165,7 +167,9 @@ def _build_rejected_message(results: list[dict], checked_at: str, total: int) ->
             symbol = _display_symbol(result)
             scan_rank = _format_rank(result.get('scan_rank'))
             lines.append(f'{symbol} (scan #{scan_rank}) {ARROW} REJECTED')
-            lines.append(f'  Reason: {result.get("reject_reason")}')
+            lines.extend([f'  {line}' for line in _format_detection_lines(result)])
+            reason = result.get("reject_reason")
+            lines.append(f'  Verdict: REJECTED ({reason})')
             mooner_lines = _format_mooner_context(result)
             if mooner_lines:
                 lines.extend([f'  {line}' for line in mooner_lines])
@@ -189,6 +193,24 @@ def _format_timestamp(value: object | None) -> str:
         parsed = parsed.replace(tzinfo=timezone.utc)
     parsed = parsed.astimezone(timezone.utc)
     return parsed.strftime('%Y-%m-%d %H:%M UTC')
+
+
+def _format_detection_lines(result: dict) -> list[str]:
+    detected_at = _format_timestamp(result.get('detected_at_utc'))
+    detected_price = _format_value(result.get('detected_price'))
+    current_price = _format_value(
+        result.get('current_price')
+        or result.get('last')
+        or result.get('mid_price')
+    )
+    move_pct = _format_percent(result.get('pct_move_since_detection'))
+    detected_close_date = result.get('detected_close_date') or 'unknown'
+    return [
+        f'Detected at: {detected_at} (close {detected_close_date})',
+        f'Detected price: {detected_price}',
+        f'Current price: {current_price}',
+        f'% move since detection: {move_pct}',
+    ]
 
 
 def _format_mooner_context(result: dict) -> list[str]:

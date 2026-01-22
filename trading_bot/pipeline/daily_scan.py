@@ -18,6 +18,7 @@ from trading_bot.market_data.fetch_prices import run as refresh_market_data
 from trading_bot.messaging.format_message import format_daily_scan_message, format_error_message
 from trading_bot.messaging import telegram_client
 from trading_bot.mooner import run_mooner_sidecar
+from trading_bot.phase import set_phase
 from trading_bot.paper.paper_engine import (
     maybe_send_weekly_summary,
     open_paper_trade,
@@ -64,6 +65,7 @@ def run_daily_scan(dry_run: bool = False) -> None:
     """
 
     logger = logging.getLogger("trading_bot")
+    set_phase("scanner")
     base_dir = Path(__file__).resolve().parents[2]
     run_handle = start_run(base_dir, 'scan', logger)
     if not run_handle.acquired:
@@ -207,14 +209,20 @@ def _run_pipeline(dry_run: bool, logger: logging.Logger) -> bool:
         return True
 
     try:
-        write_setup_candidates(
+        detected_close_date = data_as_of_str if data_as_of_str != "Unknown" else today_str
+        for candidate in setup_candidates:
+            candidate['detected_at_utc'] = generated_at_utc
+            candidate['detected_price'] = candidate.get('price')
+            candidate['detected_close_date'] = detected_close_date
+        output_path = write_setup_candidates(
             base_dir,
             setup_candidates,
             mode=config.CONFIG["mode"],
-            data_as_of=data_as_of_str,
+            data_as_of=detected_close_date,
             generated_at=generated_at_utc,
+            logger=logger,
         )
-        logger.info('SetupCandidates.json updated.')
+        logger.info('SetupCandidates snapshot written: %s', output_path)
     except OSError as exc:
         logger.warning('Failed to write SetupCandidates.json: %s', exc)
 

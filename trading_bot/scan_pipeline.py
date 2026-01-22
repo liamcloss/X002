@@ -21,6 +21,7 @@ from trading_bot.messaging import (
     send_message,
 )
 from trading_bot.mooner import run_mooner_sidecar
+from trading_bot.phase import set_phase
 from trading_bot.pretrade.setup_candidates import write_setup_candidates
 from trading_bot.symbols import tradingview_symbol
 from trading_bot.universe.active import ensure_active_column
@@ -55,6 +56,7 @@ def run_daily_scan(dry_run: bool, logger: logging.Logger | None = None) -> None:
     """Run the daily scan pipeline and dispatch Telegram updates."""
 
     logger = logger or logging.getLogger('trading_bot')
+    set_phase("scanner")
     base_dir = Path(__file__).resolve().parents[1]
     universe_path = base_dir / 'universe' / 'clean' / 'universe.parquet'
 
@@ -188,14 +190,23 @@ def run_daily_scan(dry_run: bool, logger: logging.Logger | None = None) -> None:
         return
 
     try:
-        write_setup_candidates(
+        detected_at_utc = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        detected_close_date = _format_data_as_of(data_as_of)
+        if detected_close_date == "Unknown":
+            detected_close_date = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        for candidate in setup_candidates:
+            candidate['detected_at_utc'] = detected_at_utc
+            candidate['detected_price'] = candidate.get('price')
+            candidate['detected_close_date'] = detected_close_date
+        output_path = write_setup_candidates(
             base_dir,
             setup_candidates,
             mode=config.CONFIG["mode"],
-            data_as_of=_format_data_as_of(data_as_of),
-            generated_at=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+            data_as_of=detected_close_date,
+            generated_at=detected_at_utc,
+            logger=logger,
         )
-        logger.info('SetupCandidates.json updated.')
+        logger.info('SetupCandidates snapshot written: %s', output_path)
     except OSError as exc:
         logger.warning('Failed to write SetupCandidates.json: %s', exc)
 
