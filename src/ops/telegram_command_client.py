@@ -5,6 +5,7 @@ automated trading agent.
 """
 
 import asyncio
+import collections
 import html
 import itertools
 import json
@@ -561,6 +562,8 @@ def _latest_file(directory: Path, pattern: str) -> Path | None:
         return None
     return max(files, key=lambda path: path.stat().st_mtime)
 
+_REGION_DISPLAY_ORDER = ("UK", "EU", "US", "Canada", "Other", "Global")
+
 
 def _build_scan_output(base_dir: Path, since: datetime | None) -> str | None:
     path = setup_candidates_path(base_dir)
@@ -596,55 +599,100 @@ def _build_scan_output(base_dir: Path, since: datetime | None) -> str | None:
         return '\n'.join(lines)
 
     display_limit = min(10, len(candidates))
-    for index, candidate in enumerate(candidates[:display_limit], start=1):
-        symbol = str(
-            candidate.get('display_ticker')
-            or candidate.get('symbol')
-            or candidate.get('ticker')
-            or ''
-        ).strip()
-        rank = candidate.get('rank') or index
-        entry = _format_numeric(candidate.get('planned_entry') or candidate.get('price'))
-        stop = _format_numeric(candidate.get('planned_stop') or candidate.get('stop_price'))
-        target = _format_numeric(candidate.get('planned_target') or candidate.get('target_price'))
-        rr = _format_numeric(candidate.get('rr'))
-        currency_symbol = str(candidate.get('currency_symbol') or '').strip()
-        currency_code = str(candidate.get('currency_code') or '').strip().upper()
-        entry_text = entry if entry == 'n/a' else f'{currency_symbol}{entry}'.strip()
-
-        lines.append(f'{_html_escape(str(rank))}. {_html_escape(symbol)}')
-        entry_line = f'   Entry: {_html_escape(entry_text)}'
-        if currency_code:
-            entry_line = f'{entry_line} {_html_escape(currency_code)}'
-        entry_line = (
-            f'{entry_line} | Stop: {_html_escape(stop)}'
-            f' | Target: {_html_escape(target)} | RR: {_html_escape(rr)}'
-        )
-        lines.append(entry_line)
-
-        reason = _truncate_text(str(candidate.get('reason') or '').strip())
-        volume = _format_numeric(candidate.get('volume_multiple'))
-        momentum = _format_ratio_percent(candidate.get('momentum_5d'))
-        setup_parts = []
-        if reason:
-            setup_parts.append(reason)
-        if volume != 'n/a':
-            setup_parts.append(f'Vol: {volume}x')
-        if momentum != 'n/a':
-            setup_parts.append(f'Momentum: {momentum}')
-        if setup_parts:
-            lines.append(f'   Setup: {_html_escape(" | ".join(setup_parts))}')
-
-        chart_url = candidate.get('tradingview_url')
-        if chart_url:
-            lines.append(f'   Chart: {_link_html(chart_url)}')
-        news_url = _news_search_url(candidate)
-        if news_url:
-            lines.append(f'   News: {_link_html(news_url)}')
+    ordered_candidates = sorted(candidates, key=_scan_candidate_sort_key)[:display_limit]
+    region_groups = _group_scan_candidates_by_region(ordered_candidates)
+    for region, entries in region_groups:
+        lines.append(f'📍 {region} • {len(entries)} setup{"s" if len(entries) != 1 else ""}')
+        lines.append('')
+        for index, candidate in enumerate(entries, start=1):
+            lines.extend(_scan_candidate_lines(candidate, index))
         lines.append('')
     if len(candidates) > display_limit:
         lines.append(f'...showing {display_limit} of {len(candidates)} candidates')
     return '\n'.join(lines)
+
+
+def _scan_candidate_sort_key(candidate: dict[str, object]) -> int:
+    value = candidate.get('rank')
+    if value is None:
+        value = candidate.get('scan_rank')
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return 10**9
+    if numeric <= 0:
+        return 10**9
+    return numeric
+
+
+def _group_scan_candidates_by_region(
+    candidates: list[dict[str, object]]
+) -> list[tuple[str, list[dict[str, object]]]]:
+    groups: dict[str, list[dict[str, object]]] = collections.defaultdict(list)
+    for candidate in candidates:
+        region = str(candidate.get('region') or 'Global')
+        groups[region].append(candidate)
+    return sorted(groups.items(), key=lambda item: _region_sort_key(item[0]))
+
+
+def _region_sort_key(region: str) -> int:
+    try:
+        return _REGION_DISPLAY_ORDER.index(region)
+    except ValueError:
+        return len(_REGION_DISPLAY_ORDER)
+
+
+def _scan_candidate_lines(candidate: dict[str, object], index: int) -> list[str]:
+    lines: list[str] = []
+    symbol = str(
+        candidate.get('display_ticker')
+        or candidate.get('symbol')
+        or candidate.get('ticker')
+        or ''
+    ).strip()
+    rank_value = candidate.get('rank') or candidate.get('scan_rank') or index
+    entry = _format_numeric(candidate.get('planned_entry') or candidate.get('price'))
+    stop = _format_numeric(candidate.get('planned_stop') or candidate.get('stop_price'))
+    target = _format_numeric(candidate.get('planned_target') or candidate.get('target_price'))
+    rr = _format_numeric(candidate.get('rr'))
+    currency_symbol = str(candidate.get('currency_symbol') or '').strip()
+    currency_code = str(candidate.get('currency_code') or '').strip().upper()
+    entry_text = entry if entry == 'n/a' else f'{currency_symbol}{entry}'.strip()
+
+    lines.append(f'{_html_escape(str(rank_value))}. {_html_escape(symbol)}')
+    entry_line = f'   Entry: {_html_escape(entry_text)}'
+    if currency_code:
+        entry_line = f'{entry_line} {_html_escape(currency_code)}'
+    entry_line = (
+        f'{entry_line} | Stop: {_html_escape(stop)} | Target: {_html_escape(target)} | RR: {_html_escape(rr)}'
+    )
+    lines.append(entry_line)
+
+    reason = _truncate_text(str(candidate.get('reason') or '').strip())
+    volume = _format_numeric(candidate.get('volume_multiple'))
+    momentum = _format_ratio_percent(candidate.get('momentum_5d'))
+    setup_parts = []
+    if reason:
+        setup_parts.append(reason)
+    if volume != 'n/a':
+        setup_parts.append(f'Vol: {volume}x')
+    if momentum != 'n/a':
+        setup_parts.append(f'Momentum: {momentum}')
+    if setup_parts:
+        lines.append(f'   Setup: {_html_escape(" | ".join(setup_parts))}')
+
+    market_label = candidate.get('market_label') or candidate.get('market_code')
+    if market_label:
+        lines.append(f'   Market: {_html_escape(str(market_label))}')
+
+    chart_url = candidate.get('tradingview_url')
+    if chart_url:
+        lines.append(f'   Chart: {_link_html(chart_url)}')
+    news_url = _news_search_url(candidate)
+    if news_url:
+        lines.append(f'   News: {_link_html(news_url)}')
+    lines.append('')
+    return lines
 
 
 def _pretrade_spread_pct(result: dict) -> float | None:
@@ -767,22 +815,7 @@ def _build_pretrade_output(base_dir: Path, since: datetime | None) -> str | None
                 lines.append(f'  Links: {links_line}')
             lines.append('')
 
-    lines.append('REJECTED (ranked by scan)')
-    if not rejected:
-        lines.append('None.')
-    else:
-        for result in rejected[:15]:
-            symbol = str(result.get('symbol') or '').strip()
-            scan_rank = _format_rank(result.get('scan_rank'))
-            reason = _truncate_text(str(result.get('reject_reason') or 'Unknown reason'))
-            lines.append(
-                f'{_html_escape(symbol)} (scan #{_html_escape(scan_rank)}) -> REJECTED'
-            )
-            lines.append(f'  Reason: {_html_escape(reason)}')
-            links_line = _build_pretrade_link_line(result)
-            if links_line:
-                lines.append(f'  Links: {links_line}')
-            lines.append('')
+    lines.append(f'Rejections suppressed: {len(rejected)} (details logged in pretrade outputs)')
 
     return '\n'.join(lines).strip()
 
@@ -869,7 +902,14 @@ def _format_link_badges(links: list[dict[str, str]]) -> str:
 
 
 def _format_news_scout_links(links: list[dict[str, str]]) -> str:
-    return _format_link_badges(links)
+    badges: list[str] = []
+    for link in links:
+        url = link.get('url')
+        label = link.get('label') or 'Link'
+        if not url:
+            continue
+        badges.append(f'{label}: {url}')
+    return ' | '.join(badges)
 
 
 def _build_news_scout_output(base_dir: Path, since: datetime | None) -> str | None:
@@ -926,25 +966,25 @@ def _chunk_news_scout_messages(entries: list[dict[str, object]], header: list[st
 
 def _news_scout_entry_lines(entry: dict[str, object], index: int) -> list[str]:
     lines: list[str] = []
-    symbol = _html_escape(str(entry.get('symbol') or 'UNKNOWN').strip())
-    scan_rank = _html_escape(_format_rank(entry.get('scan_rank')))
+    symbol = str(entry.get('symbol') or 'UNKNOWN').strip()
+    scan_rank = _format_rank(entry.get('scan_rank'))
     lines.append(f'{index}. {symbol} (scan #{scan_rank})')
     entry_price = _html_escape(_format_numeric(entry.get('entry')))
-    stop = _html_escape(_format_numeric(entry.get('stop')))
-    target = _html_escape(_format_numeric(entry.get('target')))
+    stop = _format_numeric(entry.get('stop'))
+    target = _format_numeric(entry.get('target'))
     lines.append(f'   Entry: {entry_price} | Stop: {stop} | Target: {target}')
     reason = str(entry.get('reason') or '').strip()
     if reason:
-        lines.append(f'   Setup: {_html_escape(reason)}')
+        lines.append(f'   Setup: {reason}')
     links_line = _format_news_scout_links(entry.get('links') or [])
     if links_line:
         lines.append(f'   Links: {links_line}')
     insight = entry.get('llm_insight')
     if insight:
-        lines.append(f'   AI: {_html_escape(insight)}')
+        lines.append(f'   AI: {insight}')
     display = entry.get('display_ticker')
     if display:
-        lines.append(f'   Display ticker: {_html_escape(display)}')
+        lines.append(f'   Display ticker: {display}')
     spread = entry.get('spread_pct')
     if isinstance(spread, (int, float)):
         lines.append(f'   Spread: {_format_percent(spread)}')
@@ -1568,12 +1608,13 @@ async def _execute_command(
         and job.chat_id is not None
     ):
         sent_product_blocks = True
+        product_parse_mode = None if job.command_name == 'news_scout' else 'HTML'
         for block in product_blocks:
             try:
                 await context.bot.send_message(
                     chat_id=job.chat_id,
                     text=block,
-                    parse_mode='HTML',
+                    parse_mode=product_parse_mode,
                 )
             except Exception as send_exc:  # noqa: BLE001 - log and continue
                 logger.error(

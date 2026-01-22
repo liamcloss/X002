@@ -22,7 +22,12 @@ from trading_bot.messaging import (
 )
 from trading_bot.mooner import run_mooner_sidecar
 from trading_bot.pretrade.setup_candidates import write_setup_candidates
-from trading_bot.symbols import tradingview_symbol
+from trading_bot.symbols import (
+    tradingview_symbol,
+    market_label_for_ticker,
+    market_region_for_ticker,
+    t212_market_code,
+)
 from trading_bot.universe.active import ensure_active_column
 from trading_bot.signals import apply_filters, detect_pullback, find_risk_geometry, rank_candidates
 from trading_bot.state import (
@@ -140,6 +145,9 @@ def run_daily_scan(dry_run: bool, logger: logging.Logger | None = None) -> None:
             continue
 
         reason = 'Pullback breakout' if was_pullback else 'Breakout'
+        region = market_region_for_ticker(base_ticker)
+        market_code = t212_market_code(base_ticker)
+        market_label = market_label_for_ticker(base_ticker) or market_code
         candidate = _build_candidate_payload(
             base_ticker=base_ticker,
             display_ticker=display_ticker,
@@ -152,6 +160,9 @@ def run_daily_scan(dry_run: bool, logger: logging.Logger | None = None) -> None:
             geometry=geometry,
             reason=reason,
             mode=config.CONFIG["mode"],
+            region=region,
+            market_code=market_code,
+            market_label=market_label,
         )
         candidates.append(candidate)
 
@@ -308,6 +319,9 @@ def _build_candidate_payload(
     geometry: dict[str, float],
     reason: str,
     mode: str,
+    region: str,
+    market_code: str | None,
+    market_label: str | None,
 ) -> dict[str, Any]:
     currency_symbol = _currency_symbol(currency_code)
     stop_pct = float(geometry['stop_pct'])
@@ -339,6 +353,9 @@ def _build_candidate_payload(
         'isa_eligible': _infer_isa_eligible(currency_code, instrument_type),
         'tradingview_url': _build_tradingview_url(base_ticker, display_ticker),
         'reason': reason,
+        'region': region,
+        'market_code': market_code,
+        'market_label': market_label,
     }
 
 

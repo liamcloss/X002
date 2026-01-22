@@ -116,8 +116,71 @@ def t212_market_code(ticker: str) -> str | None:
     return market_code or None
 
 
+_REGION_BY_MARKET_CODE: dict[str, str] = {
+    'US': 'US',
+    'CA': 'Canada',
+    'L': 'UK',
+    'D': 'EU',
+    'P': 'EU',
+    'S': 'EU',
+    'M': 'EU',
+    'A': 'EU',
+    'E': 'EU',
+    'AT': 'EU',
+    'BE': 'EU',
+    'BB': 'EU',
+    'DE': 'EU',
+    'FR': 'EU',
+    'PT': 'EU',
+}
+
+_MARKET_LABELS: dict[str, str] = {
+    'US': 'US',
+    'CA': 'Canada',
+    'L': 'LSE',
+    'D': 'XETR',
+    'P': 'EPA',
+    'S': 'SWX',
+    'M': 'MIL',
+    'A': 'AMS',
+    'E': 'BME',
+    'AT': 'VIE',
+    'BE': 'EBR',
+    'BB': 'EBR',
+    'DE': 'XETR',
+    'FR': 'EPA',
+    'PT': 'ELI',
+}
+
+
+def market_region_for_ticker(ticker: str) -> str:
+    """Return a market region label for a Trading212 ticker."""
+
+    code = t212_market_code(ticker)
+    if not code:
+        return 'Global'
+    normalized = code.lstrip('_').upper()
+    if not normalized:
+        return 'Global'
+    return _REGION_BY_MARKET_CODE.get(normalized, 'Other')
+
+
+def market_label_for_ticker(ticker: str) -> str | None:
+    """Return a user-friendly market label for a Trading212 ticker."""
+
+    code = t212_market_code(ticker)
+    if not code:
+        return None
+    normalized = code.lstrip('_').upper()
+    if not normalized:
+        return None
+    return _MARKET_LABELS.get(normalized)
+
+
 __all__ = [
     'tradingview_symbol',
     't212_market_code',
     'yfinance_symbol',
+    'market_region_for_ticker',
+    'market_label_for_ticker',
 ]

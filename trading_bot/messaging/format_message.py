@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import math
+from collections import defaultdict
 from urllib.parse import quote_plus
 
 _RANK_EMOJIS = ("🥇", "🥈", "🥉")
 _SEPARATOR = "--------------------------------"
+_REGION_DISPLAY_ORDER = ("UK", "EU", "US", "Canada", "Other", "Global")
 
 
 def _scale_to_percent(value: float | None) -> float:
@@ -84,6 +86,9 @@ def _format_candidate(candidate: dict, rank: int) -> str:
         ),
         f"Size: £{candidate['position_size']} | Risk: £{candidate['risk_gbp']} | Reward: £{candidate['reward_gbp']}",
     ]
+    market_label = candidate.get('market_label') or candidate.get('market_code')
+    if market_label:
+        lines.append(f"Market: {market_label}")
     chart_url = candidate.get('tradingview_url')
     if chart_url:
         lines.append(f"Chart: {chart_url}")
@@ -139,10 +144,8 @@ def format_daily_scan_message(
         return "\n".join(lines)
 
     lines: list[str] = _format_header(date, mode, dry_run)
-    formatted_candidates = [
-        _format_candidate(candidate, idx) for idx, candidate in enumerate(candidates)
-    ]
-    lines.append("\n\n".join(formatted_candidates))
+    region_sections = _format_region_sections(candidates)
+    lines.append("\n\n".join(region_sections))
     lines.append("")
     if mooner_section:
         lines.extend(mooner_section)
@@ -182,6 +185,32 @@ def _format_mooner_section(callouts: list[dict]) -> list[str]:
             detail = f"{detail}: {context}"
         lines.append(f"- {detail}".strip())
     return lines
+
+
+def _format_region_sections(candidates: list[dict]) -> list[str]:
+    sections: list[str] = []
+    for region, entries in _group_candidates_by_region(candidates):
+        lines = [f'📍 {region} • {len(entries)} setup{"s" if len(entries) != 1 else ""}']
+        for index, candidate in entries:
+            lines.append(_format_candidate(candidate, index))
+            lines.append("")
+        sections.append("\n".join(lines).strip())
+    return sections
+
+
+def _group_candidates_by_region(candidates: list[dict]) -> list[tuple[str, list[tuple[int, dict]]]]:
+    groups: dict[str, list[tuple[int, dict]]] = defaultdict(list)
+    for index, candidate in enumerate(candidates):
+        region = candidate.get("region") or "Global"
+        groups[region].append((index, candidate))
+    return sorted(groups.items(), key=lambda item: _region_sort_key(item[0]))
+
+
+def _region_sort_key(region: str) -> int:
+    try:
+        return _REGION_DISPLAY_ORDER.index(region)
+    except ValueError:
+        return len(_REGION_DISPLAY_ORDER)
 
 
 def format_error_message(error_text: str) -> str:

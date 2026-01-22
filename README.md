@@ -103,8 +103,9 @@ python main.py replay --start-date 2023-01-01 --days 60
 ### Commands
 
 - `scan`: Runs the daily market scan. Use `--dry-run` to avoid messaging/state writes.
+- `scan`: Runs the daily market scan. Use `--dry-run` to avoid messaging/state writes; the Telegram/console summary now groups delivered setups by region (UK, EU, US, etc.) so you can see what’s immediately tradeable in each market.
 - `universe`: Refreshes the Trading212 instrument universe.
-- `pretrade`: Evaluates yesterday's setup candidates against live quote rules, prints a console table, writes JSON outputs, and sends one consolidated Telegram summary.
+- `pretrade`: Evaluates yesterday's setup candidates against live quote rules, prints a console table, writes JSON outputs, and sends one consolidated Telegram summary that only lists executables (rejections are still logged but suppressed from the brief to reduce noise).
 - `status`: Prints the Speculation Edge health summary. The default summary splits command statuses into their own lines for readability, while `--verbose` includes directory paths, lock information, and file timestamps.
 - `mooner`: Executes the Mooner regime sidecar and records any `FIRING` callouts for follow-up.
 - `news-scout`: Builds the curated link-focused report for the latest setups, storing a JSON snapshot and optionally enriching entries with AI insights (see notes below).
@@ -123,6 +124,7 @@ The pre-trade check is a second-phase guardrail. It evaluates the latest `SetupC
   - `outputs/pretrade_viability_<timestamp>.json` for full machine-readable results.
   - `outputs/spread_report_<timestamp>.json` with per-instrument spread stats for the last N days.
   - `state/spread_samples.json` for stored spread samples.
+- **Pre-trade summary**: The CLI/Telegram report now lists only `EXECUTABLE` setups so the recap stays focused on what can be traded; rejected ideas remain in the JSON log if you need to inspect why.
 - **Sampling window**: spread sampling skips the first `SPREAD_SAMPLE_OPEN_COOLDOWN_MINUTES` after each market open and ignores pre-open sampling for those markets.
 
 `SetupCandidates.json` is written on non-dry-run scans and contains up to `PRETRADE_CANDIDATE_LIMIT` ideas, even if only the top ideas are alerted via Telegram.
