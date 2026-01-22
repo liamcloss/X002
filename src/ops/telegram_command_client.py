@@ -23,11 +23,11 @@ sys.path.insert(0, str(BASE_DIR))
 
 from trading_bot.mooner import format_mooner_callout_lines
 from trading_bot.paths import (
+    latest_setup_candidates_path,
     mooner_output_path,
     mooner_state_path,
     news_scout_output_path,
     pretrade_viability_path,
-    setup_candidates_path,
     yolo_output_path,
 )
 from trading_bot.symbols import tradingview_symbol
@@ -562,8 +562,10 @@ def _latest_file(directory: Path, pattern: str) -> Path | None:
 
 
 def _build_scan_output(base_dir: Path, since: datetime | None) -> str | None:
-    path = setup_candidates_path(base_dir)
-    if since and path.exists():
+    path = latest_setup_candidates_path(base_dir)
+    if path is None or not path.exists():
+        return None
+    if since:
         modified_at = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
         if modified_at < since:
             return None

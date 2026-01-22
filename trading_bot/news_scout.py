@@ -13,7 +13,7 @@ import os
 import requests
 
 from trading_bot import config as bot_config
-from trading_bot.paths import news_scout_output_path
+from trading_bot.paths import latest_setup_candidates_path, news_scout_output_path
 from trading_bot.symbols import tradingview_symbol
 
 SETUP_FILENAME = "SetupCandidates.json"
@@ -79,6 +79,9 @@ def run_news_scout(base_dir: Path, logger: logging.Logger, limit: int = NEWS_SCO
 
 
 def _find_latest_setup_file(base_dir: Path) -> Path | None:
+    path = latest_setup_candidates_path(base_dir)
+    if path:
+        return path
     candidates = [
         base_dir / SETUP_FILENAME,
         base_dir / "outputs" / SETUP_FILENAME,

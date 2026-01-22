@@ -8,9 +8,15 @@ from typing import Any
 
 import yfinance as yf
 
+from trading_bot.phase import get_phase
+
 
 def get_quote(symbol: str) -> dict[str, Any]:
     """Return a real-time quote snapshot from yfinance."""
+
+    # Guardrail: scanner phase must never hit live pricing.
+    if get_phase() == "scanner":
+        raise RuntimeError("Live pricing is not permitted during scanner phase.")
 
     logger = logging.getLogger('trading_bot')
     timestamp = datetime.now(timezone.utc)
