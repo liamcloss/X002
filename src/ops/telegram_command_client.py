@@ -969,10 +969,16 @@ def _news_scout_entry_lines(entry: dict[str, object], index: int) -> list[str]:
     symbol = str(entry.get('symbol') or 'UNKNOWN').strip()
     scan_rank = _format_rank(entry.get('scan_rank'))
     lines.append(f'{index}. {symbol} (scan #{scan_rank})')
-    entry_price = _html_escape(_format_numeric(entry.get('entry')))
+    currency_symbol = str(entry.get('currency_symbol') or '').strip()
+    entry_price = _format_numeric(entry.get('entry'))
     stop = _format_numeric(entry.get('stop'))
     target = _format_numeric(entry.get('target'))
-    lines.append(f'   Entry: {entry_price} | Stop: {stop} | Target: {target}')
+    entry_label = (
+        f'{_html_escape(currency_symbol)}{_html_escape(entry_price)}'
+        if currency_symbol and entry_price != 'n/a'
+        else _html_escape(entry_price)
+    )
+    lines.append(f'   Entry: {entry_label} | Stop: {_html_escape(stop)} | Target: {_html_escape(target)}')
     reason = str(entry.get('reason') or '').strip()
     if reason:
         lines.append(f'   Setup: {reason}')

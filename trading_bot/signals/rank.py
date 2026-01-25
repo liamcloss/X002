@@ -6,9 +6,11 @@ import pandas as pd
 
 
 WEIGHTS = {
-    "volume_multiple": 0.50,
-    "pct_from_20d_high": 0.25,
-    "momentum_5d": 0.25,
+    "volume_multiple": 0.30,
+    "pct_from_20d_high": 0.15,
+    "momentum_5d": 0.20,
+    "rr": 0.20,
+    "stop_pct": 0.15,
 }
 
 
@@ -33,7 +35,13 @@ def rank_candidates(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df.copy()
 
-    required = {"volume_multiple", "pct_from_20d_high", "momentum_5d"}
+    required = {
+        "volume_multiple",
+        "pct_from_20d_high",
+        "momentum_5d",
+        "rr",
+        "stop_pct",
+    }
     if not required.issubset(df.columns):
         raise ValueError("Missing required columns for ranking")
 
@@ -48,11 +56,17 @@ def rank_candidates(df: pd.DataFrame) -> pd.DataFrame:
     ranked["momentum_score"] = _min_max_normalize(
         ranked["momentum_5d"], higher_is_better=True
     )
+    ranked["rr_score"] = _min_max_normalize(ranked["rr"], higher_is_better=True)
+    ranked["stop_score"] = _min_max_normalize(
+        ranked["stop_pct"], higher_is_better=False
+    )
 
     ranked["score"] = (
         ranked["volume_score"] * WEIGHTS["volume_multiple"]
         + ranked["closeness_score"] * WEIGHTS["pct_from_20d_high"]
         + ranked["momentum_score"] * WEIGHTS["momentum_5d"]
+        + ranked["rr_score"] * WEIGHTS["rr"]
+        + ranked["stop_score"] * WEIGHTS["stop_pct"]
     )
 
     ranked = ranked.sort_values(by="score", ascending=False)

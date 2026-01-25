@@ -36,6 +36,9 @@ def build_setup_candidates_payload(
                 'momentum_5d': candidate.get('momentum_5d'),
                 'pct_from_20d_high': candidate.get('pct_from_20d_high'),
                 'tradingview_url': candidate.get('tradingview_url'),
+                'region': candidate.get('region'),
+                'market_code': candidate.get('market_code'),
+                'market_label': candidate.get('market_label'),
             }
         )
 

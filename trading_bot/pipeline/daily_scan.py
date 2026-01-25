@@ -17,13 +17,14 @@ from trading_bot.market_data import cache
 from trading_bot.market_data.fetch_prices import run as refresh_market_data
 from trading_bot.messaging.format_message import format_daily_scan_message, format_error_message
 from trading_bot.messaging import telegram_client
-from trading_bot.mooner import run_mooner_sidecar
+from trading_bot.mooner import load_mooner_states, run_mooner_sidecar
 from trading_bot.paper.paper_engine import (
     maybe_send_weekly_summary,
     open_paper_trade,
     process_open_trades,
 )
 from trading_bot.pretrade.setup_candidates import write_setup_candidates
+from trading_bot.pretrade.win_history import win_history_score
 from trading_bot.run_state import finish_run, start_run
 from trading_bot.signals.filters import apply_filters
 from trading_bot.signals.pullback import detect_pullback
@@ -54,6 +55,8 @@ _CURRENCY_SYMBOLS = {
     "CAD": "C$",
     "AUD": "A$",
 }
+
+MOONER_ACCEPTABLE_STATES = {"ARMED", "FIRING", "WARMING"}
 
 ALERT_CANDIDATE_LIMIT = 3
 
@@ -108,6 +111,8 @@ def _run_pipeline(dry_run: bool, logger: logging.Logger) -> bool:
     working_state = copy.deepcopy(state)
     cleanup_expired_cooldowns(working_state, today)
 
+    _, mooner_state_map = _initialize_mooner_context(base_dir, logger)
+
     ticker_map = _build_ticker_map(universe_df)
 
     candidate_rows: list[dict[str, float | str]] = []
@@ -148,12 +153,24 @@ def _run_pipeline(dry_run: bool, logger: logging.Logger) -> bool:
             if not geometry:
                 continue
 
+            moon_state = _moon_state_for_ticker(ticker, mooner_state_map)
+            if not _is_mooner_state_acceptable(moon_state):
+                logger.debug(
+                    "Skipping %s: Mooner state %s is not within acceptable regimes.",
+                    ticker,
+                    moon_state.get("state") if moon_state else None,
+                )
+                continue
+
             candidate_rows.append(
                 {
                     "ticker": ticker,
                     "volume_multiple": float(last_row.get("volume_multiple", 0.0)),
                     "pct_from_20d_high": float(last_row.get("pct_from_20d_high", 0.0)),
                     "momentum_5d": float(last_row.get("momentum_5d", 0.0)),
+                    "rr": float(geometry["rr"]),
+                    "stop_pct": float(geometry["stop_pct"]),
+                    "win_history_score": win_history_score(ticker, base_dir=base_dir),
                 }
             )
             candidate_metadata[ticker] = {
@@ -161,6 +178,9 @@ def _run_pipeline(dry_run: bool, logger: logging.Logger) -> bool:
                 "stop_pct": float(geometry["stop_pct"]),
                 "target_pct": float(geometry["target_pct"]),
                 "rr": float(geometry["rr"]),
+                "mooner_state": moon_state.get("state") if moon_state else None,
+                "mooner_context": moon_state.get("context") if moon_state else None,
+                "mooner_as_of": moon_state.get("as_of") if moon_state else None,
             }
         except Exception as exc:  # noqa: BLE001 - continue on per-ticker failure
             logger.warning("Skipping %s due to data error: %s", ticker, exc, exc_info=True)
@@ -524,3 +544,38 @@ def _tradingview_url(ticker: str) -> str:
     if ':' in symbol:
         return f'https://www.tradingview.com/chart/?symbol={safe_symbol}'
     return f'https://www.tradingview.com/symbols/{safe_symbol}/'
+
+
+def _initialize_mooner_context(
+    base_dir: Path,
+    logger: logging.Logger,
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Load Mooner states and build a lookup map for the scan."""
+
+    states = load_mooner_states(base_dir, logger)
+    state_map: dict[str, dict[str, Any]] = {}
+    for entry in states:
+        ticker = str(entry.get("ticker", "")).upper()
+        if not ticker:
+            continue
+        state_map[ticker] = entry
+    return states, state_map
+
+
+def _moon_state_for_ticker(
+    ticker: str,
+    mooner_state_map: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Return the Mooner state dict associated with a ticker, if any."""
+
+    if not ticker:
+        return None
+    return mooner_state_map.get(ticker.upper())
+
+
+def _is_mooner_state_acceptable(state: dict[str, Any] | None) -> bool:
+    """Determine whether a Mooner state should continue in the scan."""
+
+    if not state:
+        return True
+    return str(state.get("state", "")).upper() in MOONER_ACCEPTABLE_STATES

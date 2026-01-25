@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from urllib.parse import quote_plus
+from trading_bot.news_links import first_news_link
 
 _RANK_EMOJIS = ("🥇", "🥈", "🥉")
 _SEPARATOR = "--------------------------------"
@@ -55,9 +55,7 @@ def _news_search_url(candidate: dict) -> str | None:
         or ''
     )
     query = str(display_ticker).strip()
-    if not query:
-        return None
-    return f'https://news.google.com/search?q={quote_plus(f"{query} stock")}'
+    return first_news_link(query)
 
 
 def _format_candidate(candidate: dict, rank: int) -> str:

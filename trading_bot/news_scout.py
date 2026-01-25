@@ -10,11 +10,14 @@ from typing import Any
 from urllib.parse import quote, quote_plus
 
 import os
+from contextlib import suppress
 import requests
+import textwrap
 
 from src.market_data import yfinance_client
 
 from trading_bot import config as bot_config
+from trading_bot.news_links import news_links_for_query
 from trading_bot.paths import news_scout_output_path
 from trading_bot.pretrade.spread_gate import SpreadGate
 from trading_bot.symbols import tradingview_symbol, yfinance_symbol
@@ -44,9 +47,9 @@ def run_news_scout(base_dir: Path, logger: logging.Logger, limit: int = NEWS_SCO
     for candidate in ranked[:limit]:
         symbol = _extract_symbol(candidate)
         display = str(candidate.get("display_ticker") or "").strip() or None
-        entry_price = _extract_value(candidate, ("planned_entry", "entry", "price"))
-        stop_price = _extract_value(candidate, ("planned_stop", "stop"))
-        target_price = _extract_value(candidate, ("planned_target", "target"))
+        entry_price = _round_price(_extract_value(candidate, ("planned_entry", "entry", "price")))
+        stop_price = _round_price(_extract_value(candidate, ("planned_stop", "stop")))
+        target_price = _round_price(_extract_value(candidate, ("planned_target", "target")))
         tradingview_url = str(
             candidate.get("tradingview_url") or _build_tradingview_url(symbol, display) or ""
         ).strip() or None
@@ -62,9 +65,11 @@ def run_news_scout(base_dir: Path, logger: logging.Logger, limit: int = NEWS_SCO
                 "target": target_price,
                 "tradingview_url": tradingview_url,
                 "links": links,
+                "currency_code": candidate.get("currency_code"),
+                "currency_symbol": candidate.get("currency_symbol"),
             }
         )
-    entries = _enrich_with_llm(entries, logger)
+    entries = _enrich_with_llm(entries, base_dir, logger)
     entries, filtered_out, rejection_summary = _filter_entries_by_spread(entries, logger)
     if filtered_out:
         logger.info(
@@ -184,9 +189,8 @@ def _build_links(symbol: str | None, display: str | None, tv_url: str | None) ->
     links: list[dict[str, str]] = []
     if tv_url:
         links.append({"label": "Chart", "url": tv_url})
-    news_url = _news_search_url(query)
-    if news_url:
-        links.append({"label": "News", "url": news_url})
+    news_links = news_links_for_query(query)
+    links.extend(news_links)
     reddit_url = _reddit_search_url(query)
     if reddit_url:
         links.append({"label": "Reddit", "url": reddit_url})
@@ -199,7 +203,11 @@ def _build_links(symbol: str | None, display: str | None, tv_url: str | None) ->
     return links
 
 
-def _enrich_with_llm(entries: list[dict[str, Any]], logger: logging.Logger) -> list[dict[str, Any]]:
+def _enrich_with_llm(
+    entries: list[dict[str, Any]],
+    base_dir: Path,
+    logger: logging.Logger,
+) -> list[dict[str, Any]]:
     if not NEWS_SCOUT_LLM_ENABLED:
         return entries
     api_key = os.getenv(NEWS_SCOUT_API_KEY_ENV)
@@ -223,8 +231,23 @@ def _enrich_with_llm(entries: list[dict[str, Any]], logger: logging.Logger) -> l
         response_text = _call_openai(prompt, api_key)
     except Exception as exc:
         logger.warning('News scout LLM call failed: %s', exc)
+        _log_troubleshoot_issue(
+            base_dir,
+            f'LLM call failed: {exc}',
+            'Check outbound access to https://api.openai.com:443 and validate OPENAI_API_KEY.',
+        )
         return entries
-    insights = _parse_llm_response(response_text, logger)
+    try:
+        insights = _parse_llm_response(response_text, logger)
+    except Exception as exc:
+        logger.warning('News scout LLM response parse failed: %s', exc)
+        _log_troubleshoot_issue(
+            base_dir,
+            f'LLM response parse failed: {exc}',
+            'Inspect the raw LLM reply in logs or retry the prompt; ensure JSON-only responses.',
+        )
+        _store_llm_response_failure(base_dir, prompt, response_text)
+        return entries
     if not insights:
         logger.info('News scout LLM returned no insights.')
         return entries
@@ -279,19 +302,33 @@ def _call_openai(prompt: str, api_key: str) -> str:
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    response = requests.post(url, json=payload, headers=headers, timeout=15)
-    response.raise_for_status()
-    data = response.json()
-    return data["choices"][0]["message"]["content"]
+    proxy_keys = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+    saved_env: dict[str, str] = {}
+    for key in proxy_keys:
+        saved_env[key] = os.environ.pop(key, None)
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        return data["choices"][0]["message"]["content"]
+    finally:
+        for key, value in saved_env.items():
+            if value is None:
+                with suppress(KeyError):
+                    del os.environ[key]
+            else:
+                os.environ[key] = value
 
 
 def _parse_llm_response(text: str, logger: logging.Logger) -> dict[str, str]:
-    start = text.find("[")
-    end = text.rfind("]")
-    if start == -1 or end == -1:
+    snippet = _extract_json_array(text)
+    if snippet is None:
         raise ValueError("LLM response missing JSON array")
-    snippet = text[start:end + 1]
-    payload = json.loads(snippet)
+    try:
+        payload = json.loads(snippet)
+    except json.JSONDecodeError as exc:
+        logger.warning('News scout LLM response invalid JSON: %s', exc)
+        return {}
     insights: dict[str, str] = {}
     for item in payload:
         if not isinstance(item, dict):
@@ -308,6 +345,35 @@ def _parse_llm_response(text: str, logger: logging.Logger) -> dict[str, str]:
                 parts.append(callout)
             insights[symbol] = " | ".join(part for part in parts if part)
     return insights
+
+
+def _extract_json_array(text: str) -> str | None:
+    start = text.find("[")
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for idx in range(start, len(text)):
+        char = text[idx]
+        if escape:
+            escape = False
+            continue
+        if char == "\\":
+            escape = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+            if depth == 0:
+                return text[start : idx + 1]
+    return None
 
 
 def _filter_entries_by_spread(
@@ -361,12 +427,6 @@ def _short_display(display: str | None, symbol: str) -> str | None:
     if candidate.upper() == symbol.upper():
         return None
     return candidate
-def _news_search_url(query: str | None) -> str | None:
-    if not query:
-        return None
-    return f"https://news.google.com/search?q={quote_plus(query + ' stock')}"
-
-
 def _reddit_search_url(query: str | None) -> str | None:
     if not query:
         return None
@@ -383,3 +443,31 @@ def _threads_search_url(query: str | None) -> str | None:
     if not query:
         return None
     return f"https://www.threads.net/search?q={quote_plus(query)}"
+
+
+def _log_troubleshoot_issue(base_dir: Path, issue: str, suggestion: str) -> None:
+    path = base_dir / "logs" / "news_scout_troubleshoot.log"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    entry = f"{timestamp} | {issue} | Suggestion: {suggestion}\n"
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(entry)
+
+
+def _store_llm_response_failure(base_dir: Path, prompt: str, response: str) -> None:
+    path = base_dir / "logs" / "news_scout_llm_failures.log"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    shortened_prompt = textwrap.shorten(prompt, width=400, placeholder="…")
+    shortened_response = textwrap.shorten(response, width=400, placeholder="…")
+    entry = (
+        f"{timestamp} | Prompt: {shortened_prompt} | Response: {shortened_response}\n"
+    )
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(entry)
+
+
+def _round_price(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return round(value, 2)

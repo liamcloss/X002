@@ -72,6 +72,7 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
                     display_ticker=_extract_display_ticker(setup),
                     tradingview_url=_extract_tradingview_url(setup),
                 )
+                _add_setup_context(reject, setup)
                 results.append(
                     _attach_mooner_context(
                         reject,
@@ -99,6 +100,7 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
                     display_ticker=display_ticker,
                     tradingview_url=tradingview_url,
                 )
+                _add_setup_context(reject, setup)
                 results.append(
                     _attach_mooner_context(
                         reject,
@@ -141,6 +143,8 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
                     display_ticker=display_ticker,
                     tradingview_url=tradingview_url,
                 )
+                _add_setup_context(reject, setup)
+                _apply_quote_market_context(reject, quote)
                 results.append(
                     _attach_mooner_context(
                         reject,
@@ -169,6 +173,8 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
             result['scan_rank'] = scan_rank
             result['display_ticker'] = display_ticker
             result['tradingview_url'] = tradingview_url
+            _add_setup_context(result, setup)
+            _apply_quote_market_context(result, quote)
             results.append(_attach_mooner_context(result, symbol, display_ticker, mooner_map))
 
         _assign_exec_ranks(results)
@@ -180,7 +186,7 @@ def run_pretrade(base_dir: Path | None = None, logger: logging.Logger | None = N
         except Exception as exc:  # noqa: BLE001 - spread reporting must not break pretrade
             logger.error('Failed to write spread report: %s', exc)
 
-        messages = build_pretrade_messages(results, checked_at)
+        messages = build_pretrade_messages(results, checked_at, base_dir=base_dir)
         _print_results_messages(messages)
         send_pretrade_messages(messages, logger)
         completed = True
@@ -330,6 +336,66 @@ def _build_tradingview_url(symbol: str, display_ticker: str | None) -> str | Non
         return f'https://www.tradingview.com/chart/?symbol={safe_symbol}'
     return f'https://www.tradingview.com/symbols/{safe_symbol}/'
 
+
+def _add_setup_context(result: dict[str, Any], setup: dict[str, Any]) -> None:
+    if not setup:
+        return
+    for key in ('region', 'market_label', 'market_code'):
+        value = setup.get(key)
+        if value is not None:
+            result[key] = value
+
+
+_EXCHANGE_REGION = {
+    'L': 'UK',
+    'XLON': 'UK',
+    'LSE': 'UK',
+    'D': 'EU',
+    'XETR': 'EU',
+    'EPA': 'EU',
+    'MIL': 'EU',
+    'AMS': 'EU',
+    'CHF': 'EU',
+    'SWX': 'EU',
+    'US': 'US',
+    'NASDAQ': 'US',
+    'NYSE': 'US',
+    'TSX': 'Canada',
+    'CA': 'Canada',
+}
+
+_CURRENCY_REGION = {
+    'GBP': 'UK',
+    'GBX': 'UK',
+    'EUR': 'EU',
+    'USD': 'US',
+    'CAD': 'Canada',
+    'CHF': 'EU',
+}
+
+
+def _apply_quote_market_context(result: dict[str, Any], quote: dict[str, object]) -> None:
+    existing_region = result.get('region')
+    existing_label = result.get('market_label') or result.get('market_code')
+    exchange = _normalize_exchange(quote.get('exchange')) or _normalize_exchange(quote.get('exchangeShortName'))
+    if exchange:
+        if not existing_label:
+            result['market_label'] = exchange
+        if not existing_region:
+            result['region'] = _EXCHANGE_REGION.get(exchange.upper(), 'Other')
+        return
+    currency = _normalize_exchange(quote.get('currency'))
+    if currency and not existing_region:
+        result['region'] = _CURRENCY_REGION.get(currency.upper(), 'Other')
+
+
+def _normalize_exchange(value: object | None) -> str | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return text
 
 def _resolve_quote_symbol(
     symbol: str,

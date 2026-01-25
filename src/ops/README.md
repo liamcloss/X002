@@ -35,7 +35,7 @@ OPS_SCHEDULE_USE_UTC=0                  # 1 = UTC, 0 = local time
 OPS_SCHEDULE_UNIVERSE=sun 20:00
 OPS_SCHEDULE_MARKET_DATA=daily 00:05
 OPS_SCHEDULE_SCAN=daily 06:30
-OPS_SCHEDULE_PRETRADE=weekday 08:00
+OPS_SCHEDULE_PRETRADE=weekday 08:45; weekday 14:45  # UK pretrade at 08:45, US pretrade at 14:45
 OPS_SCHEDULE_MOONER=daily 22:00
 OPS_SCHEDULE_NOTIFY_SKIPS=1             # optional: notify if a scheduled job is blocked
 OPS_SCHEDULE_SEND_START=0               # optional: send a "started" message
@@ -45,7 +45,7 @@ Schedule format:
 - Use `daily HH:MM` or `HH:MM` for daily runs.
 - Use `mon|tue|...|sun HH:MM` for weekly runs.
 - Use `weekday`/`weekend` or comma lists like `mon,wed,fri 07:30`.
-- Multiple times can be separated with `;` (for example `daily 07:00; daily 12:00`).
+- Multiple times can be separated with `;` (for example `daily 07:00; daily 12:00`), which allows duplicate commands (like the two pretrade windows) to run independently.
 
 If you want to change the available commands, conflict groups, or log path, update `COMMAND_MAP`, `COMMAND_GROUPS`, `COMMAND_HELP`, or `LOG_PATH` in `src/ops/telegram_command_client.py`.
 

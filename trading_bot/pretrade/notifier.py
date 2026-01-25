@@ -4,16 +4,24 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Iterable
 from urllib.parse import quote, quote_plus
 
 from trading_bot.messaging.telegram_client import send_message
+from trading_bot.news_links import first_news_link
+from trading_bot.pretrade.no_exec_state import increment_no_exec_runs, reset_no_exec_runs
 from trading_bot.symbols import tradingview_symbol
 
 ARROW = '→'
 
 
-def build_pretrade_messages(results: Iterable[dict], checked_at: str) -> list[str]:
+def build_pretrade_messages(
+    results: Iterable[dict],
+    checked_at: str,
+    *,
+    base_dir: Path | None = None,
+) -> list[str]:
     results_list = list(results)
     executables = [item for item in results_list if item.get('status') == 'EXECUTABLE']
     rejected = [item for item in results_list if item.get('status') != 'EXECUTABLE']
@@ -25,10 +33,17 @@ def build_pretrade_messages(results: Iterable[dict], checked_at: str) -> list[st
     if executables:
         for index, result in enumerate(executables, start=1):
             messages.append(_build_executable_message(result, checked_at, index))
+        if rejected:
+            messages.append(_build_rejections_summary_message(len(rejected), checked_at, total=len(results_list)))
+        reset_no_exec_runs(base_dir)
+        return messages
 
-    if rejected or not results_list:
+    # No executables found
+    consecutive = increment_no_exec_runs(base_dir)
+    if consecutive >= 3:
         messages.append(_build_rejected_message(rejected, checked_at, total=len(results_list)))
-
+    else:
+        messages.append(_build_rejections_summary_message(len(rejected), checked_at, total=len(results_list)))
     return messages
 
 
@@ -121,9 +136,7 @@ def _chart_url(result: dict) -> str | None:
 def _news_url(result: dict) -> str | None:
     query_value = result.get('display_ticker') or result.get('symbol') or ''
     query = str(query_value).strip()
-    if not query:
-        return None
-    return f'https://news.google.com/search?q={quote_plus(f"{query} stock")}'
+    return first_news_link(query)
 
 
 def _build_executable_message(result: dict, checked_at: str, index: int) -> str:
@@ -143,6 +156,15 @@ def _build_executable_message(result: dict, checked_at: str, index: int) -> str:
         f'Entry: {entry} | Stop: {stop} | Target: {target}',
     ]
     lines.extend(_format_mooner_context(result))
+    region = result.get('region')
+    market_label = result.get('market_label') or result.get('market_code')
+    if region or market_label:
+        parts: list[str] = []
+        if region:
+            parts.append(region)
+        if market_label:
+            parts.append(str(market_label))
+        lines.append(f'Market: {" / ".join(parts)}')
     chart_url = _chart_url(result)
     news_url = _news_url(result)
     lines.append(f'Chart: {chart_url or "n/a"}')
@@ -172,6 +194,16 @@ def _build_rejected_message(results: list[dict], checked_at: str, total: int) ->
             lines.append('')
     lines.append(f'Checked at: {_format_timestamp(checked_at)}')
     lines.append('Execution is manual. Stops must be placed immediately.')
+    return '\n'.join(lines).strip()
+
+
+def _build_rejections_summary_message(rejected_count: int, checked_at: str, total: int) -> str:
+    lines = [
+        'PRE-TRADE REJECTIONS SUPPRESSED',
+        f'Rejected: {rejected_count} of {total}',
+        f'Checked at: {_format_timestamp(checked_at)}',
+        'Details logged in outputs/pretrade_viability_<timestamp>.json',
+    ]
     return '\n'.join(lines).strip()
 
 
