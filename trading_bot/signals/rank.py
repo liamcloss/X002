@@ -6,11 +6,13 @@ import pandas as pd
 
 
 WEIGHTS = {
-    "volume_multiple": 0.30,
-    "pct_from_20d_high": 0.15,
-    "momentum_5d": 0.20,
+    "volume_multiple": 0.22,
+    "pct_from_20d_high": 0.13,
+    "momentum_5d": 0.17,
     "rr": 0.20,
-    "stop_pct": 0.15,
+    "stop_pct": 0.10,
+    "spread_pct": 0.10,
+    "atr_pct": 0.08,
 }
 
 
@@ -41,6 +43,8 @@ def rank_candidates(df: pd.DataFrame) -> pd.DataFrame:
         "momentum_5d",
         "rr",
         "stop_pct",
+        "spread_pct",
+        "atr_pct",
     }
     if not required.issubset(df.columns):
         raise ValueError("Missing required columns for ranking")
@@ -60,6 +64,12 @@ def rank_candidates(df: pd.DataFrame) -> pd.DataFrame:
     ranked["stop_score"] = _min_max_normalize(
         ranked["stop_pct"], higher_is_better=False
     )
+    ranked["spread_score"] = _min_max_normalize(
+        ranked["spread_pct"], higher_is_better=False
+    )
+    ranked["atr_score"] = _min_max_normalize(
+        ranked["atr_pct"], higher_is_better=False
+    )
 
     ranked["score"] = (
         ranked["volume_score"] * WEIGHTS["volume_multiple"]
@@ -67,6 +77,8 @@ def rank_candidates(df: pd.DataFrame) -> pd.DataFrame:
         + ranked["momentum_score"] * WEIGHTS["momentum_5d"]
         + ranked["rr_score"] * WEIGHTS["rr"]
         + ranked["stop_score"] * WEIGHTS["stop_pct"]
+        + ranked["spread_score"] * WEIGHTS["spread_pct"]
+        + ranked["atr_score"] * WEIGHTS["atr_pct"]
     )
 
     ranked = ranked.sort_values(by="score", ascending=False)

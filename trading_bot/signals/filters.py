@@ -24,6 +24,11 @@ def _has_required_columns(df: pd.DataFrame) -> bool:
 def apply_filters(
     df: pd.DataFrame,
     max_pct_from_20d_high: float = 0.01,
+    *,
+    volume_multiple_threshold: float = 1.5,
+    momentum_threshold: float = 0.03,
+    extension_from_ma50_threshold: float = 0.20,
+    max_days_since_20d_high: int = 4,
 ) -> pd.DataFrame:
     """
     Input:
@@ -81,11 +86,11 @@ def apply_filters(
     trend_ok = close_last > ma20_last and ma20_last > ma50_last
     breakout_ok = (
         pct_from_20d_high <= max_pct_from_20d_high
-        and days_since_20d_high <= 4
+        and days_since_20d_high <= max_days_since_20d_high
     )
-    volume_ok = volume_multiple >= 1.5
-    momentum_ok = momentum_5d >= 0.03
-    extension_ok = extension_from_ma50 <= 0.20
+    volume_ok = volume_multiple >= volume_multiple_threshold
+    momentum_ok = momentum_5d >= momentum_threshold
+    extension_ok = extension_from_ma50 <= extension_from_ma50_threshold
 
     if not (trend_ok and breakout_ok and volume_ok and momentum_ok and extension_ok):
         return prepared.iloc[0:0].copy()

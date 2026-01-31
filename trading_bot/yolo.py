@@ -31,6 +31,7 @@ class YOLOSummary:
     alternatives: tuple[AlternativePick, ...]
     repeat_weeks: int
     previous_ticker: str | None
+    reroll: bool
 
 
 def load_yolo_summary(base_dir: Path | None = None) -> YOLOSummary | None:
@@ -55,6 +56,7 @@ def load_yolo_summary(base_dir: Path | None = None) -> YOLOSummary | None:
         ),
         repeat_weeks=_count_consecutive_repeats(ledger, _normalize_str(pick_payload.get("ticker"))),
         previous_ticker=_previous_ledger_ticker(ledger),
+        reroll=_to_bool(pick_payload.get("reroll")),
     )
     return summary
 
@@ -72,6 +74,8 @@ def format_yolo_summary(summary: YOLOSummary) -> list[str]:
         lines.append(f"Same ticker for {summary.repeat_weeks} consecutive week(s).")
     elif summary.previous_ticker:
         lines.append(f"Previous winner: {summary.previous_ticker}")
+    if summary.reroll:
+        lines.append("Reroll requested this week; winner replaced the prior draw.")
     if summary.rationale:
         lines.append(f"Rationale: {', '.join(summary.rationale)}")
 
@@ -143,6 +147,15 @@ def _to_float(value: Any) -> float | None:
     if numeric != numeric:  # NaN
         return None
     return numeric
+
+
+def _to_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    text = str(value).strip().lower()
+    return text in {"true", "1", "yes", "y", "on"}
 
 
 def _count_consecutive_repeats(

@@ -25,7 +25,7 @@ def build_pretrade_messages(
     results_list = list(results)
     executables = [item for item in results_list if item.get('status') == 'EXECUTABLE']
     rejected = [item for item in results_list if item.get('status') != 'EXECUTABLE']
-    executables.sort(key=_result_sort_rank)
+    executables.sort(key=_executables_sort_key)
     rejected.sort(key=_result_sort_rank)
 
     messages: list[str] = []
@@ -50,7 +50,7 @@ def build_pretrade_messages(
 def send_pretrade_messages(messages: Iterable[str], logger: logging.Logger) -> None:
     for message in messages:
         try:
-            send_message(message)
+            send_message(message, context='pretrade-report')
         except Exception as exc:  # noqa: BLE001 - do not crash on Telegram failure
             logger.error('Pretrade Telegram notification failed: %s', exc)
 
@@ -111,6 +111,48 @@ def _result_sort_rank(result: dict) -> int:
     return numeric
 
 
+def _executables_sort_key(result: dict) -> tuple[float, int]:
+    return (-_history_score_value(result), _result_sort_rank(result))
+
+
+def _history_score_value(result: dict) -> float:
+    value = result.get('history_score')
+    if isinstance(value, (int, float)):
+        return float(value)
+    return 0.0
+
+
+def _history_summary_line(result: dict) -> str | None:
+    wins = _history_count(result.get('history_wins'))
+    losses = _history_count(result.get('history_losses'))
+    total = wins + losses
+    if total == 0:
+        return None
+    score = _format_history_score(result.get('history_score'))
+    return f'History: {wins}-{losses} (score {score})'
+
+
+def _history_count(value: object | None) -> int:
+    if isinstance(value, (int, float)):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+def _format_history_score(value: object | None) -> str:
+    if value is None:
+        return '0.00'
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return '0.00'
+    if numeric != numeric:  # NaN guard
+        return '0.00'
+    return f'{numeric:.2f}'
+
+
 def _display_symbol(result: dict) -> str:
     value = result.get('display_ticker') or result.get('symbol') or ''
     return str(value).strip()
@@ -156,6 +198,9 @@ def _build_executable_message(result: dict, checked_at: str, index: int) -> str:
         f'Entry: {entry} | Stop: {stop} | Target: {target}',
     ]
     lines.extend(_format_mooner_context(result))
+    history_line = _history_summary_line(result)
+    if history_line:
+        lines.append(history_line)
     region = result.get('region')
     market_label = result.get('market_label') or result.get('market_code')
     if region or market_label:

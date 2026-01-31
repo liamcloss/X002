@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from typing import Any
+
+from trading_bot.mooner.constants import format_mooner_state
 from trading_bot.news_links import first_news_link
 
 _RANK_EMOJIS = ("🥇", "🥈", "🥉")
@@ -93,6 +96,9 @@ def _format_candidate(candidate: dict, rank: int) -> str:
     news_url = _news_search_url(candidate)
     if news_url:
         lines.append(f"News: {news_url}")
+    mooner_line = _format_candidate_mooner_line(candidate)
+    if mooner_line:
+        lines.append(mooner_line)
     return "\n".join(lines)
 
 
@@ -209,6 +215,14 @@ def _region_sort_key(region: str) -> int:
         return _REGION_DISPLAY_ORDER.index(region)
     except ValueError:
         return len(_REGION_DISPLAY_ORDER)
+
+
+def _format_candidate_mooner_line(candidate: dict[str, Any]) -> str | None:
+    return format_mooner_state(
+        candidate.get("mooner_state"),
+        context=candidate.get("mooner_context"),
+        as_of=candidate.get("mooner_as_of"),
+    )
 
 
 def format_error_message(error_text: str) -> str:

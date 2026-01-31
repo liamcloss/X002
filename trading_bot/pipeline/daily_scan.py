@@ -13,11 +13,21 @@ from urllib.parse import quote
 import pandas as pd
 
 from trading_bot import config
-from trading_bot.market_data import cache
+from trading_bot.config import (
+    CANDIDATE_MAX_ATR_PCT,
+    CANDIDATE_MAX_SPREAD_PCT,
+    SIGNAL_EXTENSION_THRESHOLD,
+    SIGNAL_MAX_DAYS_SINCE_HIGH,
+    SIGNAL_MAX_PCT_FROM_20D_HIGH,
+    SIGNAL_MOMENTUM_THRESHOLD,
+    SIGNAL_VOLUME_MULTIPLE_THRESHOLD,
+)
+from trading_bot.market_data import cache, indicators
 from trading_bot.market_data.fetch_prices import run as refresh_market_data
 from trading_bot.messaging.format_message import format_daily_scan_message, format_error_message
 from trading_bot.messaging import telegram_client
 from trading_bot.mooner import load_mooner_states, run_mooner_sidecar
+from trading_bot.mooner.constants import format_mooner_state, is_positive_mooner_state
 from trading_bot.paper.paper_engine import (
     maybe_send_weekly_summary,
     open_paper_trade,
@@ -56,8 +66,6 @@ _CURRENCY_SYMBOLS = {
     "AUD": "A$",
 }
 
-MOONER_ACCEPTABLE_STATES = {"ARMED", "FIRING", "WARMING"}
-
 ALERT_CANDIDATE_LIMIT = 3
 
 
@@ -83,7 +91,7 @@ def run_daily_scan(dry_run: bool = False) -> None:
             print(error_text)
             return
         try:
-            telegram_client.send_error(error_text)
+            telegram_client.send_error(error_text, context='daily-scan-error')
         except Exception as send_exc:  # noqa: BLE001 - log and continue
             logger.exception("Failed to send Telegram error message: %s", send_exc)
     finally:
@@ -117,6 +125,7 @@ def _run_pipeline(dry_run: bool, logger: logging.Logger) -> bool:
 
     candidate_rows: list[dict[str, float | str]] = []
     candidate_metadata: dict[str, dict[str, float]] = {}
+    fallback_candidates: list[tuple[str, pd.Series, dict[str, float]]] = []
     data_as_of = None
     skipped = 0
 
@@ -140,7 +149,14 @@ def _run_pipeline(dry_run: bool, logger: logging.Logger) -> bool:
             if not pullback.get("in_pullback"):
                 continue
 
-            filtered = apply_filters(price_df, max_pct_from_20d_high=0.05)
+            filtered = apply_filters(
+                price_df,
+                max_pct_from_20d_high=SIGNAL_MAX_PCT_FROM_20D_HIGH,
+                volume_multiple_threshold=SIGNAL_VOLUME_MULTIPLE_THRESHOLD,
+                momentum_threshold=SIGNAL_MOMENTUM_THRESHOLD,
+                extension_from_ma50_threshold=SIGNAL_EXTENSION_THRESHOLD,
+                max_days_since_20d_high=SIGNAL_MAX_DAYS_SINCE_HIGH,
+            )
             if filtered.empty:
                 continue
 
@@ -149,31 +165,22 @@ def _run_pipeline(dry_run: bool, logger: logging.Logger) -> bool:
 
             last_row = filtered.iloc[-1]
             price = float(last_row.get("close_price", last_row.get("close", 0.0)))
+            spread_pct = _calculate_spread_pct(last_row)
+            atr_pct = _calculate_atr_pct(price_df, last_row, logger)
+            if not _signal_metrics_ok(
+                ticker,
+                spread_pct,
+                atr_pct,
+                logger,
+            ):
+                skipped += 1
+                continue
+
             geometry = find_risk_geometry(price)
             if not geometry:
                 continue
-
             moon_state = _moon_state_for_ticker(ticker, mooner_state_map)
-            if not _is_mooner_state_acceptable(moon_state):
-                logger.debug(
-                    "Skipping %s: Mooner state %s is not within acceptable regimes.",
-                    ticker,
-                    moon_state.get("state") if moon_state else None,
-                )
-                continue
-
-            candidate_rows.append(
-                {
-                    "ticker": ticker,
-                    "volume_multiple": float(last_row.get("volume_multiple", 0.0)),
-                    "pct_from_20d_high": float(last_row.get("pct_from_20d_high", 0.0)),
-                    "momentum_5d": float(last_row.get("momentum_5d", 0.0)),
-                    "rr": float(geometry["rr"]),
-                    "stop_pct": float(geometry["stop_pct"]),
-                    "win_history_score": win_history_score(ticker, base_dir=base_dir),
-                }
-            )
-            candidate_metadata[ticker] = {
+            candidate_meta = {
                 "price": price,
                 "stop_pct": float(geometry["stop_pct"]),
                 "target_pct": float(geometry["target_pct"]),
@@ -182,16 +189,48 @@ def _run_pipeline(dry_run: bool, logger: logging.Logger) -> bool:
                 "mooner_context": moon_state.get("context") if moon_state else None,
                 "mooner_as_of": moon_state.get("as_of") if moon_state else None,
             }
+            candidate_entry = {
+                "ticker": ticker,
+                "volume_multiple": float(last_row.get("volume_multiple", 0.0)),
+                "pct_from_20d_high": float(last_row.get("pct_from_20d_high", 0.0)),
+                "momentum_5d": float(last_row.get("momentum_5d", 0.0)),
+                "rr": float(geometry["rr"]),
+                "stop_pct": float(geometry["stop_pct"]),
+                "win_history_score": win_history_score(ticker, base_dir=base_dir),
+                "spread_pct": spread_pct if spread_pct is not None else 0.0,
+                "atr_pct": atr_pct if atr_pct is not None else 0.0,
+            }
+            fallback_candidates.append((ticker, last_row, candidate_meta, candidate_entry))
+            if not _is_mooner_state_acceptable(moon_state):
+                logger.debug(
+                    "Mooner state %s for %s is outside the positive list but will still be considered.",
+                    moon_state.get("state") if moon_state else None,
+                    ticker,
+                )
+
+            candidate_rows.append(candidate_entry)
+            candidate_metadata[ticker] = candidate_meta
         except Exception as exc:  # noqa: BLE001 - continue on per-ticker failure
             logger.warning("Skipping %s due to data error: %s", ticker, exc, exc_info=True)
             skipped += 1
 
     pretrade_limit = _pretrade_candidate_limit()
+    if not candidate_rows and fallback_candidates:
+        promoted = fallback_candidates[:pretrade_limit]
+        logger.warning(
+            "Mooner gating filtered all %s candidates; promoting %s fallbacks for this run.",
+            len(fallback_candidates),
+            len(promoted),
+        )
+        for ticker, _, meta, entry in promoted:
+            candidate_rows.append(entry)
+            candidate_metadata[ticker] = meta
     setup_candidates, ranked_count = _rank_and_build_candidates(
         candidate_rows,
         candidate_metadata,
         ticker_map,
         limit=pretrade_limit,
+        logger=logger,
     )
     alert_candidates = setup_candidates[:ALERT_CANDIDATE_LIMIT]
 
@@ -243,9 +282,25 @@ def _run_pipeline(dry_run: bool, logger: logging.Logger) -> bool:
     if alert_candidates:
         open_paper_trade(alert_candidates[0], today_str)
 
-    telegram_client.send_message(message)
+    telegram_client.send_message(message, context='daily-scan-report')
     save_state(working_state)
     return True
+
+
+def _initialize_mooner_context(
+    base_dir: Path,
+    logger: logging.Logger,
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Load Mooner states and build a lookup map for the scan."""
+
+    states = load_mooner_states(base_dir, logger)
+    state_map: dict[str, dict[str, Any]] = {}
+    for entry in states:
+        ticker = str(entry.get("ticker", "")).upper()
+        if not ticker:
+            continue
+        state_map[ticker] = entry
+    return states, state_map
 
 
 def _load_universe(base_dir: Path, logger: logging.Logger) -> pd.DataFrame:
@@ -441,9 +496,27 @@ def _rank_and_build_candidates(
     ticker_map: dict[str, dict[str, Any]],
     *,
     limit: int,
+    logger: logging.Logger | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
+    runtime_logger = logger or logging.getLogger("trading_bot")
     candidate_df = pd.DataFrame(candidate_rows)
     if candidate_df.empty:
+        return [], 0
+
+    required_columns = {
+        "volume_multiple",
+        "pct_from_20d_high",
+        "momentum_5d",
+        "rr",
+        "stop_pct",
+    }
+    missing = required_columns - set(candidate_df.columns)
+    if missing:
+        runtime_logger.warning(
+            "Ranking skipped: missing required columns (%s); %s rows available.",
+            ", ".join(sorted(missing)),
+            len(candidate_rows),
+        )
         return [], 0
 
     ranked = rank_candidates(candidate_df)
@@ -453,15 +526,15 @@ def _rank_and_build_candidates(
     top_ranked = ranked.head(limit)
     candidates = []
     for _, row in top_ranked.iterrows():
-        key = str(row['ticker'])
+        key = str(row["ticker"])
         entry = ticker_map[key]
         candidates.append(
             _build_candidate(
                 row=row,
                 meta=candidate_metadata[key],
-                currency_code=str(entry['currency_code']),
-                raw_ticker=str(entry.get('raw_ticker', key)),
-                short_name=str(entry.get('short_name', '')).strip() or None,
+                currency_code=str(entry["currency_code"]),
+                raw_ticker=str(entry.get("raw_ticker", key)),
+                short_name=str(entry.get("short_name", "")).strip() or None,
             )
         )
     return candidates, ranked_count
@@ -516,6 +589,9 @@ def _build_candidate(
         "risk_gbp": risk_gbp,
         "reward_gbp": reward_gbp,
         "tradingview_url": _tradingview_url(raw_ticker),
+        "mooner_state": meta.get("mooner_state"),
+        "mooner_context": meta.get("mooner_context"),
+        "mooner_as_of": meta.get("mooner_as_of"),
     }
 
 
@@ -546,20 +622,87 @@ def _tradingview_url(ticker: str) -> str:
     return f'https://www.tradingview.com/symbols/{safe_symbol}/'
 
 
-def _initialize_mooner_context(
-    base_dir: Path,
-    logger: logging.Logger,
-) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
-    """Load Mooner states and build a lookup map for the scan."""
+def _calculate_spread_pct(row: pd.Series) -> float | None:
+    high = _row_value(row, 'high', 'high_price')
+    low = _row_value(row, 'low', 'low_price')
+    close = _row_value(row, 'close_price', 'close')
+    if high is None or low is None or close is None or close == 0:
+        return None
+    spread = high - low
+    if spread <= 0:
+        return 0.0
+    return spread / close
 
-    states = load_mooner_states(base_dir, logger)
-    state_map: dict[str, dict[str, Any]] = {}
-    for entry in states:
-        ticker = str(entry.get("ticker", "")).upper()
-        if not ticker:
-            continue
-        state_map[ticker] = entry
-    return states, state_map
+
+def _calculate_atr_pct(
+    price_df: pd.DataFrame,
+    row: pd.Series,
+    logger: logging.Logger,
+) -> float | None:
+    close = _row_value(row, 'close_price', 'close')
+    if close is None or close <= 0:
+        return None
+    cleaned = _standardize_price_columns(price_df)
+    if cleaned.empty:
+        return None
+    atr_series = indicators.atr(cleaned)
+    if atr_series.empty:
+        return None
+    atr_value = _to_float(atr_series.iloc[-1])
+    if atr_value is None or atr_value <= 0:
+        return None
+    return atr_value / close
+
+
+def _standardize_price_columns(price_df: pd.DataFrame) -> pd.DataFrame:
+    rename_map = {col: str(col).title() for col in price_df.columns}
+    return price_df.rename(columns=rename_map)
+
+
+def _signal_metrics_ok(
+    ticker: str,
+    spread_pct: float | None,
+    atr_pct: float | None,
+    logger: logging.Logger,
+) -> bool:
+    if spread_pct is not None and spread_pct > CANDIDATE_MAX_SPREAD_PCT:
+        logger.debug(
+            'Skipping %s: intraday spread %.2f%% > %.2f%%',
+            ticker,
+            spread_pct * 100,
+            CANDIDATE_MAX_SPREAD_PCT * 100,
+        )
+        return False
+    if atr_pct is not None and atr_pct > CANDIDATE_MAX_ATR_PCT:
+        logger.debug(
+            'Skipping %s: ATR %.2f%% > %.2f%%',
+            ticker,
+            atr_pct * 100,
+            CANDIDATE_MAX_ATR_PCT * 100,
+        )
+        return False
+    return True
+
+
+def _row_value(row: pd.Series, *keys: str) -> float | None:
+    for key in keys:
+        value = row.get(key)
+        numeric = _to_float(value)
+        if numeric is not None:
+            return numeric
+    return None
+
+
+def _to_float(value: object | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if numeric != numeric:  # NaN guard
+        return None
+    return numeric
 
 
 def _moon_state_for_ticker(
@@ -578,4 +721,4 @@ def _is_mooner_state_acceptable(state: dict[str, Any] | None) -> bool:
 
     if not state:
         return True
-    return str(state.get("state", "")).upper() in MOONER_ACCEPTABLE_STATES
+    return is_positive_mooner_state(state.get("state"))

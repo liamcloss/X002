@@ -441,7 +441,7 @@ def maybe_send_weekly_summary(
 
     try:
         message = _build_weekly_summary(today, lookback_days)
-        send_paper_message(message)
+        send_paper_message(message, context='paper-weekly-summary')
         reports['weekly_summary'] = today.isoformat()
         logger.info('Weekly paper trade summary sent.')
     except Exception as exc:  # noqa: BLE001 - non-fatal reporting failure
@@ -486,7 +486,7 @@ def _notify_open(
         f'Stop: {stop_str} | Target: {target_str}\n'
         f'Size: {size_str} | Risk: {risk_str} | Reward: {reward_str}'
     )
-    send_paper_message(text)
+    send_paper_message(text, context='paper-open')
 
 
 def _notify_close(
@@ -506,7 +506,7 @@ def _notify_close(
     lines = [header, f'Entry: {entry_str} | Exit: {price_str}']
     if pnl_str != 'N/A':
         lines.append(f'P&L: {pnl_str}')
-    send_paper_message('\n'.join(lines))
+    send_paper_message('\n'.join(lines), context='paper-close')
 
 
 __all__ = [

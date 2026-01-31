@@ -19,6 +19,7 @@ class RunType(str, Enum):
     MOONER = "MOONER"
     YOLO = "YOLO"
     NEWS_SCOUT = "NEWS_SCOUT"
+    PRETRADE_HISTORY = "PRETRADE_HISTORY"
 
 
 class AlertState(str, Enum):

@@ -18,6 +18,17 @@ sys.path.insert(0, str(ROOT_DIR))
 from trading_bot.market_data import cache
 from trading_bot.paths import yolo_blocked_path, yolo_output_path
 
+from extra_options.yolo_positions import (
+    DEFAULT_STAKE_GBP,
+    append_position,
+    close_position_entry,
+    entry_open_after_week,
+    find_open_position,
+    latest_close,
+    load_positions,
+    write_positions,
+)
+
 YOLO_PICK_FILENAME = "YOLO_Pick.json"
 YOLO_LEDGER_FILENAME = "YOLO_Ledger.json"
 MIN_PRICE = 0.20
@@ -45,17 +56,27 @@ class CandidateMetrics:
     score: float
 
 
-def run_yolo_penny_lottery(base_dir: Path | None = None, logger: logging.Logger | None = None) -> dict | None:
+def run_yolo_penny_lottery(
+    base_dir: Path | None = None,
+    logger: logging.Logger | None = None,
+    reroll: bool = False,
+    close_ticker: str | None = None,
+) -> dict | None:
     """Run the weekly YOLO pick and persist the result."""
 
     root = base_dir or Path(__file__).resolve().parents[1]
     logger = logger or logging.getLogger("yolo_penny")
+    if close_ticker:
+        return _close_position(root, close_ticker, logger)
     week_of = _week_start(date.today())
     existing = _load_last_pick(root)
     if existing and existing.get("week_of") == week_of.isoformat():
-        logger.info("YOLO pick already logged for week %s (%s); refreshing timestamp.", week_of, existing["ticker"])
-        _write_pick(root, existing)
-        return existing
+        if reroll:
+            logger.info("YOLO reroll requested for week %s; generating a replacement pick.", week_of)
+        else:
+            logger.info("YOLO pick already logged for week %s (%s); refreshing timestamp.", week_of, existing["ticker"])
+            _write_pick(root, existing)
+            return existing
 
     candidates = _gather_candidates(root, logger)
     if not candidates:
@@ -63,35 +84,73 @@ def run_yolo_penny_lottery(base_dir: Path | None = None, logger: logging.Logger 
         return None
 
     ranked = sorted(candidates, key=lambda item: item.score, reverse=True)
-    best = ranked[0]
-    alternatives = [
-        _serialize_candidate(candidate)
-        for candidate in ranked[1 : 1 + ALTERNATIVE_CANDIDATE_COUNT]
-    ]
-    risk_reasons = _assess_pick_risk(best)
-    if risk_reasons:
-        blocked_payload = _build_blocked_payload(best, week_of, risk_reasons)
-        _record_blocked_pick(root, blocked_payload)
+    blocked_tickers: list[str] = []
+    selected_index: int | None = None
+    selected_candidate: CandidateMetrics | None = None
+    for index, candidate in enumerate(ranked):
+        risk_reasons = _assess_pick_risk(candidate)
+        if risk_reasons:
+            blocked_payload = _build_blocked_payload(candidate, week_of, risk_reasons)
+            _record_blocked_pick(root, blocked_payload)
+            logger.warning(
+                "YOLO pick blocked for week %s (%s); reasons: %s",
+                week_of,
+                candidate.ticker,
+                "; ".join(risk_reasons),
+            )
+            blocked_tickers.append(candidate.ticker)
+            continue
+        selected_candidate = candidate
+        selected_index = index
+        break
+
+    if not selected_candidate:
         logger.warning(
-            "YOLO pick blocked for week %s (%s); reasons: %s",
+            "No YOLO candidate passed risk checks for week %s; %s blocked entries logged.",
             week_of,
-            best.ticker,
-            "; ".join(risk_reasons),
+            len(blocked_tickers),
         )
         return None
+
+    alternatives = []
+    for index, candidate in enumerate(ranked):
+        if index == selected_index:
+            continue
+        if len(alternatives) >= ALTERNATIVE_CANDIDATE_COUNT:
+            break
+        if candidate.ticker in blocked_tickers:
+            continue
+        alternatives.append(_serialize_candidate(candidate))
+    entry_tuple = entry_open_after_week(root, week_of, selected_candidate.ticker)
+    fallback_date = week_of + timedelta(days=1)
+    entry_date, entry_price = entry_tuple if entry_tuple else (fallback_date, selected_candidate.close)
+    entry_date_iso = entry_date.isoformat()
     payload = {
         "week_of": week_of.isoformat(),
-        "ticker": best.ticker,
-        "price": round(best.close, 4),
-        "yolo_score": round(best.score, 4),
-        "rationale": best.rationale,
+        "ticker": selected_candidate.ticker,
+        "price": round(selected_candidate.close, 4),
+        "yolo_score": round(selected_candidate.score, 4),
+        "rationale": selected_candidate.rationale,
         "stake_gbp": 2.00,
         "intent": "LOTTERY_TICKET",
+        "reroll": reroll,
         "alternatives": alternatives,
     }
     _write_pick(root, payload)
-    _append_ledger(root, payload)
-    logger.info("YOLO penny pick for week %s: %s (score %.2f)", week_of, best.ticker, best.score)
+    _append_ledger(root, payload, overwrite_week=reroll)
+    _record_open_position(
+        root,
+        week_of.isoformat(),
+        selected_candidate.ticker,
+        entry_date_iso,
+        entry_price,
+    )
+    logger.info(
+        "YOLO penny pick for week %s: %s (score %.2f)",
+        week_of,
+        selected_candidate.ticker,
+        selected_candidate.score,
+    )
     return payload
 
 
@@ -284,16 +343,28 @@ def _write_pick(base_dir: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def _append_ledger(base_dir: Path, entry: dict) -> None:
-    path = _make_ledger_path(base_dir)
-    history: list = []
-    if path.exists():
-        try:
-            history = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            history = []
+def _append_ledger(base_dir: Path, entry: dict, overwrite_week: bool = False) -> None:
+    history = _load_ledger_entries(base_dir)
+    if overwrite_week:
+        week = entry.get("week_of")
+        if week:
+            history = [item for item in history if item.get("week_of") != week]
     history.append(entry)
+    path = _make_ledger_path(base_dir)
     path.write_text(json.dumps(history, indent=2), encoding="utf-8")
+
+
+def _load_ledger_entries(base_dir: Path) -> list[dict]:
+    path = yolo_output_path(base_dir, YOLO_LEDGER_FILENAME)
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [entry for entry in payload if isinstance(entry, dict)]
 
 
 def _blocked_path(base_dir: Path) -> Path:
@@ -360,6 +431,59 @@ def _serialize_candidate(candidate: CandidateMetrics) -> dict[str, Any]:
         "yolo_score": round(candidate.score, 4),
         "rationale": candidate.rationale,
     }
+
+
+def _record_open_position(
+    base_dir: Path,
+    week_of: str,
+    ticker: str,
+    entry_date: str,
+    entry_price: float,
+) -> None:
+    if not entry_date or not entry_price:
+        return
+    if entry_price <= 0:
+        return
+    entries = load_positions(base_dir)
+    filtered = [
+        entry
+        for entry in entries
+        if not (
+            entry.get("week_of") == week_of
+            and str(entry.get("ticker", "")).strip().upper() == ticker.strip().upper()
+            and entry.get("status") == "OPEN"
+        )
+    ]
+    shares = DEFAULT_STAKE_GBP / entry_price
+    append_position(filtered, week_of, ticker, entry_date, entry_price, shares)
+    write_positions(base_dir, filtered)
+
+
+def _close_position(
+    base_dir: Path,
+    ticker: str,
+    logger: logging.Logger,
+) -> dict | None:
+    entries = load_positions(base_dir)
+    entry = find_open_position(entries, ticker)
+    if not entry:
+        logger.info("No open YOLO position recorded for %s.", ticker)
+        return None
+    close_info = latest_close(base_dir, ticker)
+    if not close_info:
+        logger.warning("Cannot close YOLO position %s; price data unavailable.", ticker)
+        return None
+    close_date, close_price = close_info
+    close_position_entry(entry, close_date, close_price)
+    write_positions(base_dir, entries)
+    logger.info(
+        "Closed YOLO position for %s at %.4f on %s (value %.2f).",
+        ticker,
+        close_price,
+        close_date,
+        entry.get("close_value"),
+    )
+    return entry
 
 
 if __name__ == "__main__":

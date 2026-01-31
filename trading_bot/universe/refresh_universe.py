@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-import requests
+from trading_bot.messaging import telegram_client
 from trading_bot.universe.normalise_universe import normalise_universe
 from trading_bot.universe.t212_client import Trading212Client
 from trading_bot.run_state import finish_run, start_run
@@ -128,7 +128,7 @@ def run_universe_refresh() -> None:
             f"Types: {type_summary}\n"
             f"Extended hours count: {summary['extended_hours_count']}"
         )
-        _send_telegram(message, logger)
+        _send_telegram(message, logger, context='universe-refresh-success')
         logger.info("Trading212 universe refresh completed successfully.")
         completed = True
     except Exception as exc:  # noqa: BLE001 - report failure details
@@ -147,6 +147,7 @@ def run_universe_refresh() -> None:
                 "❌ Trading212 universe refresh failed after 3 attempts\n"
                 "Last successful universe retained",
                 logger,
+                context='universe-refresh-error',
             )
         else:
             _send_telegram(
@@ -154,6 +155,7 @@ def run_universe_refresh() -> None:
                 f"Attempt {failure_count} of {MAX_ATTEMPTS}\n"
                 f"Error: {exc}",
                 logger,
+                context='universe-refresh-error',
             )
         logger.exception("Trading212 universe refresh failed: %s", exc)
     finally:
@@ -183,17 +185,12 @@ def _parse_timestamp(value: str | None) -> datetime | None:
         return None
 
 
-def _send_telegram(message: str, logger: logging.Logger) -> None:
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-    if not token or not chat_id:
-        logger.warning("Telegram credentials missing; message not sent.")
-        return
-
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
-    try:
-        response = requests.post(url, data=payload, timeout=15)
-        response.raise_for_status()
-    except requests.RequestException as exc:
-        logger.warning("Telegram message failed: %s", exc)
+def _send_telegram(
+    message: str,
+    logger: logging.Logger,
+    *,
+    context: str = 'universe-refresh',
+) -> None:
+    sent = telegram_client.send_message(message, context=context)
+    if not sent:
+        logger.warning('Telegram notification %s failed or skipped.', context)

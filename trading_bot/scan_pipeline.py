@@ -211,7 +211,7 @@ def run_daily_scan(dry_run: bool, logger: logging.Logger | None = None) -> None:
         logger.warning('Failed to write SetupCandidates.json: %s', exc)
 
     try:
-        send_message(message)
+        send_message(message, context='scan-pipeline-report')
     except Exception as exc:  # noqa: BLE001 - Telegram error handling
         logger.exception('Telegram message failed: %s', exc)
         _handle_scan_error(exc, logger, dry_run=False)
@@ -446,6 +446,6 @@ def _handle_scan_error(exc: Exception, logger: logging.Logger, dry_run: bool) ->
     if dry_run:
         return
     try:
-        send_error(format_error_message(str(exc)))
+        send_error(format_error_message(str(exc)), context='scan-pipeline-error')
     except Exception as send_exc:  # noqa: BLE001 - error reporting fallback
         logger.warning('Failed to send error message via Telegram: %s', send_exc)

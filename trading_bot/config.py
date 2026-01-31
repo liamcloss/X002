@@ -142,6 +142,15 @@ MARKET_DATA_REFRESH_MAX_AGE_HOURS = _get_number("market_data_refresh_max_age_hou
 SPREAD_SAMPLING_LOOKBACK_DAYS = _section_int(_section("spread_sampling"), "lookback_days", 20)
 SPREAD_SAMPLING_OPEN_COOLDOWN_MINUTES = _section_int(_section("spread_sampling"), "open_cooldown_minutes", 30)
 
+SIGNAL_CONFIG = _section("signals")
+CANDIDATE_MAX_SPREAD_PCT = _section_float(SIGNAL_CONFIG, "max_spread_pct", 0.035)
+CANDIDATE_MAX_ATR_PCT = _section_float(SIGNAL_CONFIG, "max_atr_pct", 0.02)
+SIGNAL_MAX_PCT_FROM_20D_HIGH = _section_float(SIGNAL_CONFIG, "max_pct_from_20d_high", 0.05)
+SIGNAL_VOLUME_MULTIPLE_THRESHOLD = _section_float(SIGNAL_CONFIG, "volume_multiple_threshold", 1.5)
+SIGNAL_MOMENTUM_THRESHOLD = _section_float(SIGNAL_CONFIG, "momentum_threshold", 0.03)
+SIGNAL_EXTENSION_THRESHOLD = _section_float(SIGNAL_CONFIG, "extension_from_ma50_threshold", 0.2)
+SIGNAL_MAX_DAYS_SINCE_HIGH = _section_int(SIGNAL_CONFIG, "max_days_since_20d_high", 4)
+
 STOP_PERCENT_RANGE = _get_tuple("stop_percent_range", (None, None))
 TARGET_PERCENT_RANGE = _get_tuple("target_percent_range", (None, None))
 COOLDOWN_DAYS = CONFIG.get("cooldown_days")

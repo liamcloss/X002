@@ -61,7 +61,7 @@ COMMAND_MAP = {
     "status": [PYTHON_EXECUTABLE, "main.py", "status"],
     "market_data": [PYTHON_EXECUTABLE, "-m", "trading_bot.market_data.fetch_prices"],
     "mooner": [PYTHON_EXECUTABLE, "main.py", "mooner"],
-    "yolo": [PYTHON_EXECUTABLE, "extra_options/yolo_penny_lottery.py"],
+    "yolo": [PYTHON_EXECUTABLE, "main.py", "yolo"],
     "news_scout": [PYTHON_EXECUTABLE, "main.py", "news-scout"],
 }
 
@@ -72,7 +72,7 @@ COMMAND_HELP = {
     "status": "Show system status (append 'verbose' for full output).",
     "market_data": "Refresh the market data cache.",
     "mooner": "Run the Mooner sidecar regime watch.",
-    "yolo": "Run the penny stock YOLO lottery.",
+    "yolo": "Run the penny stock YOLO lottery (append 'reroll' to refresh or 'close <ticker>' to settle a held position).",
     "yolo_history": "Display the YOLO ledger history.",
     "news_scout": "Run the news scout summary (alias /news-scout).",
     "rocket": "Alias for /mooner (🚀).",
@@ -280,6 +280,25 @@ def _command_groups(command_name: str) -> set[str]:
     if groups is None:
         return {command_name}
     return set(groups)
+
+
+def _parts_request_yolo_reroll(parts: list[str]) -> bool:
+    if len(parts) <= 1:
+        return False
+    reroll_tokens = {"reroll", "--reroll"}
+    for part in parts[1:]:
+        if part.strip().lower() in reroll_tokens:
+            return True
+    return False
+
+
+def _parse_yolo_close(parts: list[str]) -> str | None:
+    if len(parts) < 3:
+        return None
+    if parts[1].strip().lower() != "close":
+        return None
+    ticker = parts[2].strip()
+    return ticker.upper() if ticker else None
 
 
 def _build_job(command_name: str, command: list[str], update: Update) -> RunningJob:
@@ -1735,6 +1754,12 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     command_args = list(command)
     if command_name == 'status' and len(parts) > 1 and parts[1].lower() == 'verbose':
         command_args.append('--verbose')
+    reroll_requested = command_name == 'yolo' and _parts_request_yolo_reroll(parts)
+    if reroll_requested and '--reroll' not in command_args:
+        command_args.append('--reroll')
+    close_ticker = _parse_yolo_close(parts) if command_name == 'yolo' else None
+    if close_ticker and '--close' not in command_args:
+        command_args.extend(['--close', close_ticker])
     job = _build_job(command_name, command_args, update)
     lock_conflicts = _find_lock_conflicts(job.groups)
     conflicts: list[RunningJob]
