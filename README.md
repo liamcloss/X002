@@ -113,8 +113,7 @@ python main.py replay --start-date 2023-01-01 --days 60
 
 ### Commands
 
-- `scan`: Runs the daily market scan. Use `--dry-run` to avoid messaging/state writes.
-- `scan`: Runs the daily market scan. Use `--dry-run` to avoid messaging/state writes; the Telegram/console summary now groups delivered setups by region (UK, EU, US, etc.) so you can see what’s immediately tradeable in each market.
+- `scan`: Runs the daily market scan. Use `--dry-run` to avoid messaging/state writes, `--force-market-data` to rerun the refresh even if the cache already looks fresh, and enjoy the Telegram/console summary that now groups delivered setups by region (UK, EU, US, etc.) so you can see what’s immediately tradeable in each market.
 - `universe`: Refreshes the Trading212 instrument universe.
 - `pretrade`: Evaluates yesterday's setup candidates against live quote rules, prints a console table, writes JSON outputs, and sends one consolidated Telegram summary that only lists executables (rejections are still logged but suppressed from the brief to reduce noise).
 - `pretrade-history`: Record the outcome of a manual execution (`target-hit` for a win, `stopped` for a loss) or list the stored win/loss history. Each executable summary now surfaces its historical wins/losses and sorts higher-probability symbols first.
@@ -142,11 +141,16 @@ The pre-trade check is a second-phase guardrail. It evaluates the latest `SetupC
 
 `SetupCandidates.json` is written on non-dry-run scans and contains up to `PRETRADE_CANDIDATE_LIMIT` ideas, even if only the top ideas are alerted via Telegram.
 
+## Paper trade automation
+
+The daily scan already drives the paper-trading engine: after the setup candidates are written, the pipeline calls `trading_bot.paper.paper_engine.process_open_trades` to close any open trades whose cached quotes hit the stop or target levels, and `open_paper_trade` to create a new trade from the top-ranked executable (subject to the breakout gate). Each trade tracks both the stop and target percentages derived from the signal geometry, and every open/close is broadcast via Telegram through `send_paper_message` so you can see that both entry and exit levels are being enforced automatically.
+
 ## Market data and symbol mapping
 
 - **Market data source**: yfinance is the only quote source used for pre-trade and market data refresh.
 - **Trading212 usage**: account balance, positions, and execution only (no price or spread fetching).
 - **Symbol mapping**: Trading212 tickers are mapped to yfinance symbols via `trading_bot/symbols.py`, using `display_ticker` when available. The pre-trade guard logs mappings when a symbol is rewritten.
+- **Market refresh tuning**: you can configure `market_data.batch_size`, `rate_limit_delay_min/max`, `burst_batches`, and `burst_cooldown_seconds` in `config.yaml` to speed up the refresh (larger batches + tighter delays make the run finish sooner; the new pre-filtering step also skips tickers whose cache is already up-to-date before hitting yfinance). Monitor `state/prices_retry_state.json` to see which tickers are being deferred/blacklisted after repeated download failures.
 
 ## Universe active flag
 

@@ -56,6 +56,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     scan_parser = subparsers.add_parser("scan", help="Run market scan")
     scan_parser.add_argument("--dry-run", action="store_true", help="Skip external outputs")
+    scan_parser.add_argument(
+        "--force-market-data",
+        action="store_true",
+        help="Re-run the market data refresh even if the cache is not stale.",
+    )
 
     subparsers.add_parser("universe", help="Refresh trading universe")
     subparsers.add_parser("pretrade", help="Run pre-trade viability check")
@@ -118,11 +123,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _handle_scan(logger, dry_run: bool) -> None:
+def _handle_scan(logger, dry_run: bool, force_market_data: bool) -> None:
     logger.info('Starting daily scan')
     if dry_run:
         logger.info('DRY RUN – no Telegram, no state updates')
-    run_daily_scan(dry_run=dry_run)
+    if force_market_data:
+        logger.info('Force-refresh requested for market data via CLI flag.')
+    run_daily_scan(dry_run=dry_run, force_market_data=force_market_data)
 
 
 def _handle_universe(logger) -> None:
@@ -322,7 +329,7 @@ def main() -> int:
         return 1
 
     if args.command == RunType.SCAN.value.lower():
-        _handle_scan(logger, dry_run=args.dry_run)
+        _handle_scan(logger, dry_run=args.dry_run, force_market_data=args.force_market_data)
     elif args.command == RunType.UNIVERSE.value.lower():
         _handle_universe(logger)
     elif args.command == RunType.REPLAY.value.lower():

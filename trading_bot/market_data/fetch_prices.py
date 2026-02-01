@@ -13,6 +13,13 @@ from typing import Any, Iterable
 
 import pandas as pd
 
+from trading_bot.config import (
+    MARKET_DATA_BATCH_SIZE,
+    MARKET_DATA_BURST_BATCHES,
+    MARKET_DATA_BURST_COOLDOWN_SECONDS,
+    MARKET_DATA_RATE_LIMIT_MAX,
+    MARKET_DATA_RATE_LIMIT_MIN,
+)
 from trading_bot.logging_setup import setup_logging
 from trading_bot.market_data import cache, yfinance_client
 from trading_bot.symbols import yfinance_symbol
@@ -22,11 +29,12 @@ RETRY_STATE_FILE = "prices_retry_state.json"
 MARKET_STATE_FILE = "market_data_state.json"
 LOCK_FILE = "market_data.lock"
 SYMBOL_MAP_FILE = 'market_symbol_map.json'
+BLACKLIST_FILE = "market_data_blacklist.json"
 
-BATCH_SIZE = 20
-RATE_LIMIT_DELAY_RANGE = (0.6, 1.2)
-BURST_BATCHES = 4
-BURST_COOLDOWN_SECONDS = 3.0
+RATE_LIMIT_DELAY_RANGE = (MARKET_DATA_RATE_LIMIT_MIN, MARKET_DATA_RATE_LIMIT_MAX)
+BATCH_SIZE = MARKET_DATA_BATCH_SIZE
+BURST_BATCHES = MARKET_DATA_BURST_BATCHES
+BURST_COOLDOWN_SECONDS = MARKET_DATA_BURST_COOLDOWN_SECONDS
 ADAPTIVE_PENALTY_STEP = 0.4
 ADAPTIVE_PENALTY_DECAY = 0.2
 ADAPTIVE_MAX_PENALTY = 3.0
@@ -109,12 +117,44 @@ def run() -> bool:
         random.shuffle(tickers)
         prices_dir = cache.ensure_prices_dir(base_dir)
 
-        total = len(tickers)
         successes = 0
         failures = 0
         processed_total = 0
         last_business_day = _last_business_day()
-        batches = list(_batches(tickers, BATCH_SIZE))
+        current_time = datetime.now()
+        pending_payloads = _collect_pending_payloads(
+            tickers,
+            prices_dir,
+            logger,
+            retry_state,
+            current_time,
+            last_business_day,
+            symbol_map,
+        )
+        _save_symbol_map(symbol_map_path, symbol_map)
+        total_tickers = len(tickers)
+        queue_size = len(pending_payloads)
+        skipped_count = total_tickers - queue_size
+        blacklisted_count, deferred_count = _retry_state_summary(retry_state)
+        logger.info(
+            "Market data queue prepared: %s/%s tickers scheduled (skipped %s as fresh or cooling).",
+            queue_size,
+            total_tickers,
+            skipped_count,
+        )
+        logger.info(
+            "Retry state snapshot: %s blacklisted, %s ticking backoff/cooling entries.",
+            blacklisted_count,
+            deferred_count,
+        )
+        pending_items = list(pending_payloads.items())
+        total = len(pending_items)
+        if total == 0:
+            logger.info("All tickers already up to date; nothing to refresh.")
+            completed = True
+            success = True
+            return True
+        batches = list(_chunk_items(pending_items, BATCH_SIZE))
         total_batches = len(batches)
         batch_durations: list[float] = []
 
@@ -132,17 +172,7 @@ def run() -> bool:
             batch_start = time.monotonic()
             processed_before_batch = processed_total
             logger.info("Starting batch %s with %s tickers.", batch_index, len(batch))
-            current_time = datetime.now()
-            batch_payload = _prepare_batch(
-                batch,
-                prices_dir,
-                logger,
-                retry_state,
-                current_time,
-                last_business_day,
-                symbol_map,
-            )
-            _save_symbol_map(symbol_map_path, symbol_map)
+            batch_payload = dict(batch)
 
             if not batch_payload:
                 logger.info("Batch %s: all tickers up to date or deferred.", batch_index)
@@ -500,6 +530,58 @@ def _batches(items: list[dict[str, str]], size: int) -> Iterable[list[dict[str, 
         yield items[index : index + size]
 
 
+def _chunk_items(items: list[tuple[str, dict[str, object]]], size: int) -> Iterable[list[tuple[str, dict[str, object]]]]:
+    for index in range(0, len(items), size):
+        yield items[index : index + size]
+
+
+def _prepare_entry_payload(
+    entry: dict[str, str],
+    prices_dir: Path,
+    logger: logging.Logger,
+    retry_state: dict[str, dict[str, Any]],
+    current_time: datetime,
+    last_business_day: pd.Timestamp,
+    symbol_map: dict[str, str],
+) -> tuple[str, dict[str, object]] | None:
+    base_ticker = entry["ticker"]
+    alias = entry["alias"]
+    legacy_alias = entry.get("legacy_alias", "")
+    previous_alias = symbol_map.get(base_ticker) or legacy_alias
+    alias_changed = bool(previous_alias and previous_alias.upper() != alias.upper())
+    if alias_changed:
+        logger.warning(
+            "Market identifier changed for %s: %s -> %s. Rebuilding cache.",
+            base_ticker,
+            previous_alias,
+            alias,
+        )
+    symbol_map[base_ticker] = alias
+    info = retry_state.get(alias, {})
+    if info.get("blacklisted"):
+        logger.debug("Skipping %s because it is blacklisted.", alias)
+        return None
+    if not _should_attempt(info, current_time):
+        logger.debug("Deferring %s until %s.", alias, info.get("next_try"))
+        return None
+    if alias_changed:
+        existing = pd.DataFrame()
+        last_date = None
+    else:
+        existing = cache.load_cache(prices_dir, base_ticker, logger)
+        last_date = cache.last_cached_date(existing)
+    if last_date is not None and last_date >= last_business_day:
+        logger.info("%s already up to date (last cached %s).", base_ticker, last_date.date())
+        return None
+    start = cache.calculate_fetch_start(last_date)
+    return alias, {
+        "base_ticker": base_ticker,
+        "start": start,
+        "existing": existing,
+        "last_date": last_date,
+    }
+
+
 def _prepare_batch(
     tickers: list[dict[str, str]],
     prices_dir: Path,
@@ -510,47 +592,52 @@ def _prepare_batch(
     symbol_map: dict[str, str],
 ) -> dict[str, dict[str, object]]:
     batch_payload: dict[str, dict[str, object]] = {}
-
     for entry in tickers:
-        base_ticker = entry["ticker"]
-        alias = entry["alias"]
-        legacy_alias = entry.get('legacy_alias', '')
-        previous_alias = symbol_map.get(base_ticker) or legacy_alias
-        alias_changed = bool(
-            previous_alias and previous_alias.upper() != alias.upper()
+        result = _prepare_entry_payload(
+            entry,
+            prices_dir,
+            logger,
+            retry_state,
+            current_time,
+            last_business_day,
+            symbol_map,
         )
-        if alias_changed:
-            logger.warning(
-                'Market identifier changed for %s: %s -> %s. Rebuilding cache.',
-                base_ticker,
-                previous_alias,
-                alias,
-            )
-        symbol_map[base_ticker] = alias
-        info = retry_state.get(alias, {})
-        if info.get("blacklisted"):
-            logger.debug("Skipping %s because it is blacklisted.", alias)
-            continue
-        if not _should_attempt(info, current_time):
-            logger.debug("Deferring %s until %s.", alias, info.get("next_try"))
-            continue
-        if alias_changed:
-            existing = pd.DataFrame()
-            last_date = None
-        else:
-            existing = cache.load_cache(prices_dir, base_ticker, logger)
-            last_date = cache.last_cached_date(existing)
-        if last_date is not None and last_date >= last_business_day:
-            logger.info("%s already up to date (last cached %s).", base_ticker, last_date.date())
-            continue
-        start = cache.calculate_fetch_start(last_date)
-        batch_payload[alias] = {
-            "base_ticker": base_ticker,
-            "start": start,
-            "existing": existing,
-            "last_date": last_date,
-        }
+        if result:
+            alias, payload = result
+            batch_payload[alias] = payload
     return batch_payload
+
+
+def _collect_pending_payloads(
+    tickers: list[dict[str, str]],
+    prices_dir: Path,
+    logger: logging.Logger,
+    retry_state: dict[str, dict[str, Any]],
+    current_time: datetime,
+    last_business_day: pd.Timestamp,
+    symbol_map: dict[str, str],
+) -> dict[str, dict[str, object]]:
+    pending: dict[str, dict[str, object]] = {}
+    for entry in tickers:
+        result = _prepare_entry_payload(
+            entry,
+            prices_dir,
+            logger,
+            retry_state,
+            current_time,
+            last_business_day,
+            symbol_map,
+        )
+        if result:
+            alias, payload = result
+            pending[alias] = payload
+    return pending
+
+
+def _retry_state_summary(state: dict[str, dict[str, Any]]) -> tuple[int, int]:
+    blacklisted = sum(1 for info in state.values() if info.get("blacklisted"))
+    deferred = sum(1 for info in state.values() if info.get("next_try"))
+    return blacklisted, deferred
 
 
 def _should_attempt(info: dict[str, Any], current_time: datetime) -> bool:

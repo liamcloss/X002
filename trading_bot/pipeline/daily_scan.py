@@ -67,9 +67,10 @@ _CURRENCY_SYMBOLS = {
 }
 
 ALERT_CANDIDATE_LIMIT = 3
+MAX_SETUP_CANDIDATES = 10
 
 
-def run_daily_scan(dry_run: bool = False) -> None:
+def run_daily_scan(dry_run: bool = False, force_market_data: bool = False) -> None:
     """
     Executes the entire daily pipeline.
     """
@@ -82,7 +83,7 @@ def run_daily_scan(dry_run: bool = False) -> None:
     failed = False
     completed = False
     try:
-        completed = _run_pipeline(dry_run=dry_run, logger=logger)
+        completed = _run_pipeline(dry_run=dry_run, logger=logger, force_market_data=force_market_data)
     except Exception as exc:  # noqa: BLE001 - controlled error reporting
         failed = True
         logger.exception("Daily scan failed: %s", exc)
@@ -98,7 +99,7 @@ def run_daily_scan(dry_run: bool = False) -> None:
         finish_run(run_handle, logger, failed=failed, completed=completed)
 
 
-def _run_pipeline(dry_run: bool, logger: logging.Logger) -> bool:
+def _run_pipeline(dry_run: bool, logger: logging.Logger, force_market_data: bool) -> bool:
     base_dir = Path(__file__).resolve().parents[2]
     today = date.today()
     today_str = today.isoformat()
@@ -112,7 +113,7 @@ def _run_pipeline(dry_run: bool, logger: logging.Logger) -> bool:
     if prices_dir is None:
         return False
 
-    if not _refresh_market_data_if_needed(base_dir, logger):
+    if not _refresh_market_data_if_needed(base_dir, logger, force_refresh=force_market_data):
         return False
 
     state = load_state()
@@ -167,6 +168,8 @@ def _run_pipeline(dry_run: bool, logger: logging.Logger) -> bool:
             price = float(last_row.get("close_price", last_row.get("close", 0.0)))
             spread_pct = _calculate_spread_pct(last_row)
             atr_pct = _calculate_atr_pct(price_df, last_row, logger)
+            avg_daily_volume = _average_daily_volume(price_df)
+            ema_flags = _ema_flags(price_df, price)
             if not _signal_metrics_ok(
                 ticker,
                 spread_pct,
@@ -198,7 +201,15 @@ def _run_pipeline(dry_run: bool, logger: logging.Logger) -> bool:
                 "stop_pct": float(geometry["stop_pct"]),
                 "win_history_score": win_history_score(ticker, base_dir=base_dir),
                 "spread_pct": spread_pct if spread_pct is not None else 0.0,
+                "spread_percent": spread_pct if spread_pct is not None else 0.0,
                 "atr_pct": atr_pct if atr_pct is not None else 0.0,
+                "atr_percent": (atr_pct * 100) if atr_pct is not None else None,
+                "avg_daily_volume": float(avg_daily_volume) if avg_daily_volume is not None else None,
+                "price_above_20ema": ema_flags.get("price_above_20ema"),
+                "price_above_ema20": ema_flags.get("price_above_ema20"),
+                "ema20_above_ema50": ema_flags.get("ema20_above_ema50"),
+                "ema20_above_ema_50": ema_flags.get("ema20_above_ema_50"),
+                "ema_20_above_ema_50": ema_flags.get("ema_20_above_ema_50"),
             }
             fallback_candidates.append((ticker, last_row, candidate_meta, candidate_entry))
             if not _is_mooner_state_acceptable(moon_state):
@@ -324,7 +335,12 @@ def _ensure_cache_initialized(base_dir: Path, logger: logging.Logger) -> Path | 
     return prices_dir
 
 
-def _refresh_market_data_if_needed(base_dir: Path, logger: logging.Logger) -> bool:
+def _refresh_market_data_if_needed(
+    base_dir: Path,
+    logger: logging.Logger,
+    *,
+    force_refresh: bool = False,
+) -> bool:
     lock_path = base_dir / 'state' / 'market_data.lock'
     lock_started = _read_lock_timestamp(lock_path)
     if lock_started:
@@ -343,6 +359,17 @@ def _refresh_market_data_if_needed(base_dir: Path, logger: logging.Logger) -> bo
         max_age_hours = 24.0
     last_run = _read_last_market_run(base_dir)
     is_stale = _is_stale(last_run, max_age_hours)
+
+    if force_refresh:
+        logger.info(
+            'Force-refresh requested; bypassing scan_refresh_mode (%s) and refreshing market data.',
+            mode,
+        )
+        refresh_ok = refresh_market_data()
+        if refresh_ok is False:
+            logger.warning('Market data refresh did not complete; scan aborted to avoid stale data.')
+            return False
+        return True
 
     if mode == 'skip':
         if is_stale:
@@ -546,7 +573,8 @@ def _pretrade_candidate_limit() -> int:
         limit_value = int(limit)
     except (TypeError, ValueError):
         return ALERT_CANDIDATE_LIMIT
-    return max(ALERT_CANDIDATE_LIMIT, limit_value)
+    enforced = max(ALERT_CANDIDATE_LIMIT, limit_value)
+    return min(MAX_SETUP_CANDIDATES, enforced)
 
 
 def _build_candidate(
@@ -592,6 +620,15 @@ def _build_candidate(
         "mooner_state": meta.get("mooner_state"),
         "mooner_context": meta.get("mooner_context"),
         "mooner_as_of": meta.get("mooner_as_of"),
+        "atr_pct": _to_float(row.get("atr_pct")),
+        "atr_percent": _to_float(row.get("atr_percent")),
+        "avg_daily_volume": row.get("avg_daily_volume"),
+        "spread_percent": _to_float(row.get("spread_percent")),
+        "price_above_20ema": row.get("price_above_20ema"),
+        "price_above_ema20": row.get("price_above_ema20"),
+        "ema20_above_ema50": row.get("ema20_above_ema50"),
+        "ema20_above_ema_50": row.get("ema20_above_ema_50"),
+        "ema_20_above_ema_50": row.get("ema_20_above_ema_50"),
     }
 
 
@@ -657,6 +694,56 @@ def _calculate_atr_pct(
 def _standardize_price_columns(price_df: pd.DataFrame) -> pd.DataFrame:
     rename_map = {col: str(col).title() for col in price_df.columns}
     return price_df.rename(columns=rename_map)
+
+
+def _select_series(price_df: pd.DataFrame, *keys: str) -> pd.Series:
+    for key in keys:
+        if key in price_df.columns:
+            return price_df[key].dropna()
+    return pd.Series(dtype=float)
+
+
+def _average_daily_volume(price_df: pd.DataFrame) -> float | None:
+    series = _select_series(price_df, "volume", "Volume", "avg_volume", "volume_traded")
+    if series.empty:
+        return None
+    avg = series.tail(30).mean()
+    if pd.isna(avg):
+        return None
+    return float(avg)
+
+
+def _ema_flags(price_df: pd.DataFrame, price: float) -> dict[str, bool | None]:
+    close_series = _select_series(price_df, "close", "Close", "close_price")
+    flags = {
+        "price_above_20ema": None,
+        "price_above_ema20": None,
+        "ema20_above_ema50": None,
+        "ema20_above_ema_50": None,
+        "ema_20_above_ema_50": None,
+    }
+    if close_series.empty:
+        return flags
+    ema20 = close_series.ewm(span=20, adjust=False).mean()
+    ema50 = close_series.ewm(span=50, adjust=False).mean()
+    if ema20.empty or ema50.empty:
+        return flags
+    last_ema20 = ema20.iloc[-1]
+    last_ema50 = ema50.iloc[-1]
+    if pd.isna(last_ema20) or pd.isna(last_ema50):
+        return flags
+    price_above = price > last_ema20
+    ema_alignment = last_ema20 > last_ema50
+    flags.update(
+        {
+            "price_above_20ema": price_above,
+            "price_above_ema20": price_above,
+            "ema20_above_ema50": ema_alignment,
+            "ema20_above_ema_50": ema_alignment,
+            "ema_20_above_ema_50": ema_alignment,
+        }
+    )
+    return flags
 
 
 def _signal_metrics_ok(

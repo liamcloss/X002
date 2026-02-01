@@ -151,6 +151,13 @@ SIGNAL_MOMENTUM_THRESHOLD = _section_float(SIGNAL_CONFIG, "momentum_threshold", 
 SIGNAL_EXTENSION_THRESHOLD = _section_float(SIGNAL_CONFIG, "extension_from_ma50_threshold", 0.2)
 SIGNAL_MAX_DAYS_SINCE_HIGH = _section_int(SIGNAL_CONFIG, "max_days_since_20d_high", 4)
 
+MARKET_DATA_CONFIG = _section("market_data")
+MARKET_DATA_BATCH_SIZE = _section_int(MARKET_DATA_CONFIG, "batch_size", 20)
+MARKET_DATA_RATE_LIMIT_MIN = _section_float(MARKET_DATA_CONFIG, "rate_limit_delay_min", 0.6)
+MARKET_DATA_RATE_LIMIT_MAX = _section_float(MARKET_DATA_CONFIG, "rate_limit_delay_max", 1.2)
+MARKET_DATA_BURST_BATCHES = _section_int(MARKET_DATA_CONFIG, "burst_batches", 4)
+MARKET_DATA_BURST_COOLDOWN_SECONDS = _section_float(MARKET_DATA_CONFIG, "burst_cooldown_seconds", 3.0)
+
 STOP_PERCENT_RANGE = _get_tuple("stop_percent_range", (None, None))
 TARGET_PERCENT_RANGE = _get_tuple("target_percent_range", (None, None))
 COOLDOWN_DAYS = CONFIG.get("cooldown_days")
